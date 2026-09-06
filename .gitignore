@@ -2,3 +2,4 @@
 /hpscan
 *.log
 *.pid
+.push-reviewed
