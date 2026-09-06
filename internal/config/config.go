@@ -52,16 +52,12 @@ func Defaults() Config {
 }
 
 // DefaultPath returns the config file location: $HPSCAN_CONFIG if set,
-// otherwise ~/.config/hpscan/config.yaml.
+// otherwise ~/.config/hpscan/config.yaml (Windows: %ProgramData%\hpscan).
 func DefaultPath() string {
 	if p := os.Getenv("HPSCAN_CONFIG"); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "config.yaml"
-	}
-	return filepath.Join(home, ".config", "hpscan", "config.yaml")
+	return platformDefaultPath()
 }
 
 // Load reads and validates the configuration at path. Missing fields take

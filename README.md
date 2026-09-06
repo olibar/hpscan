@@ -15,7 +15,8 @@ HP's own utilities use. Nothing is installed on the printer.
 Grab the binary for your platform from the
 [Releases](https://github.com/olibar/hpscan/releases) page
 (`hpscan-darwin-arm64` for Apple Silicon Macs, `hpscan-darwin-amd64` for Intel
-Macs, `hpscan-linux-amd64` / `hpscan-linux-arm64` for NAS and Linux boxes), or
+Macs, `hpscan-linux-amd64` / `hpscan-linux-arm64` for NAS and Linux boxes,
+`hpscan-windows-amd64.exe` for Windows), or
 build from source with Go 1.26+:
 
 ```sh
@@ -119,6 +120,27 @@ Builds the image on the NAS with the legacy `docker-compose`, host networking
 for mDNS, and runs the container as the SSH user (files owned by that user).
 Fine for a plain shared folder; not suitable for Cloud Sync folders (see above).
 
+## Windows
+
+Download `hpscan-windows-amd64.exe`, rename it `hpscan.exe` and put it in a
+permanent folder such as `C:\Program Files\hpscan`. In a PowerShell window
+opened **as Administrator**:
+
+```powershell
+cd "C:\Program Files\hpscan"
+.\hpscan.exe config init
+.\hpscan.exe config set output_dir "C:\Users\<you>\Documents\Scans"   # absolute path; the service runs as SYSTEM
+.\hpscan.exe config set name "Office PC"
+.\hpscan.exe -v scan                # test from the console first
+.\hpscan.exe install                # Windows service, automatic start
+.\hpscan.exe status
+```
+
+Config and log live in `C:\ProgramData\hpscan`. `install`, `uninstall`,
+`start`, `stop`, `restart` and `status` all talk to the Service Control
+Manager and need an Administrator window. Windows Firewall does not need
+changes: the client only makes outgoing connections to the printer.
+
 ## Troubleshooting
 
 * `hpscan -v scan` scans one page from the computer: proves network + scanner.
@@ -148,9 +170,8 @@ added here. If it does not, the probe output is what is needed to fix it.
 * Flatbed only. No document feeder (ADF) or duplex support yet.
 * LEDM printers only. Newer models that expose scan-to-computer through eSCL
   (AirScan) or HP Smart cloud are not supported.
-* macOS and Linux (systemd, Synology DSM) services. No Windows service yet;
-  `hpscan run` works on Windows from a terminal if built with `GOOS=windows`,
-  but startup integration is not provided.
+* Windows service support is implemented but has not been tested on a real
+  machine yet; reports welcome.
 * One destination per running instance.
 
 ## Build from source

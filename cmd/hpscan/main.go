@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -117,6 +118,9 @@ func dispatch(args []string, cfgPath string, verbose bool, runAs string) error {
 		}
 		return err
 	}
+	if cmd == "run" && cfg.LogFile == "" && runtime.GOOS == "windows" {
+		cfg.LogFile = manager(cfgPath).LogPath
+	}
 	setupLogging(cfg.LogLevel, cfg.LogFile, verbose)
 	switch cmd {
 	case "run":
@@ -172,10 +176,8 @@ func runCmd(cfg config.Config, cfgPath string) error {
 		slog.Warn("hpscan: pidfile not written", "error", err)
 	}
 	defer mgr.RemovePid()
-	ctx, cancel := signalContext()
-	defer cancel()
 	slog.Info("hpscan: starting", "version", version, "config", cfgPath, "output_dir", cfg.ExpandedOutputDir())
-	err := daemon.Run(ctx, cfg)
+	err := runPlatform(cfg, func(ctx context.Context) error { return daemon.Run(ctx, cfg) })
 	slog.Info("hpscan: stopped")
 	return err
 }
