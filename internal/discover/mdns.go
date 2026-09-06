@@ -31,7 +31,9 @@ func (s Scanner) Address() string {
 // Browse lists _scanner._tcp services until ctx expires.
 func Browse(ctx context.Context) ([]Scanner, error) {
 	slog.Debug("discover: browsing _scanner._tcp")
-	resolver, err := zeroconf.NewResolver(nil)
+	// IPv4 only: the IPv6 multicast path is unreliable on Windows and HP printers
+	// announce themselves over IPv4 anyway.
+	resolver, err := zeroconf.NewResolver(zeroconf.SelectIPTraffic(zeroconf.IPv4))
 	if err != nil {
 		return nil, fmt.Errorf("mdns resolver: %w", err)
 	}
