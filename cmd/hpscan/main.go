@@ -40,6 +40,7 @@ func main() {
 	fs := flag.NewFlagSet("hpscan", flag.ExitOnError)
 	cfgPath := fs.String("config", config.DefaultPath(), "config file path (or $HPSCAN_CONFIG)")
 	verbose := fs.Bool("v", false, "debug logging regardless of config")
+	runAs := fs.String("user", "", "install only: run the systemd unit as this account")
 	fs.Usage = usage(fs)
 	_ = fs.Parse(os.Args[1:])
 	args := fs.Args()
@@ -54,7 +55,7 @@ func main() {
 	// Accept flags after the command too: `hpscan run --config <path>`.
 	_ = fs.Parse(args[1:])
 	args = append(args[:1], fs.Args()...)
-	if err := dispatch(args, *cfgPath, *verbose); err != nil {
+	if err := dispatch(args, *cfgPath, *verbose, *runAs); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -98,7 +99,7 @@ Flags:
 	}
 }
 
-func dispatch(args []string, cfgPath string, verbose bool) error {
+func dispatch(args []string, cfgPath string, verbose bool, runAs string) error {
 	cmd, rest := args[0], args[1:]
 	switch cmd {
 	case "config":
@@ -107,7 +108,7 @@ func dispatch(args []string, cfgPath string, verbose bool) error {
 		setupLogging("info", "", verbose)
 		return discoverCmd()
 	case "install", "uninstall", "start", "stop", "restart", "status":
-		return serviceCmd(cmd, rest, cfgPath, verbose)
+		return serviceCmd(cmd, runAs, cfgPath, verbose)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -195,16 +196,12 @@ func manager(cfgPath string) service.Manager {
 	}
 }
 
-func serviceCmd(cmd string, args []string, cfgPath string, verbose bool) error {
+func serviceCmd(cmd, runAs, cfgPath string, verbose bool) error {
 	setupLogging("info", "", verbose)
 	mgr := manager(cfgPath)
+	mgr.RunAs = runAs // systemd system unit only
 	switch cmd {
 	case "install":
-		if len(args) == 2 && args[0] == "--user" {
-			mgr.RunAs = args[1] // systemd system unit only
-		} else if len(args) != 0 {
-			return fmt.Errorf("usage: hpscan install [--user <name>]")
-		}
 		if _, err := config.Load(cfgPath); err != nil {
 			return fmt.Errorf("config must be valid before installing: %w", err)
 		}
