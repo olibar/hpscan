@@ -34,12 +34,12 @@ $SSH -t "$HOST" "sudo mkdir -p $APP && sudo chown \$(id -un) $APP && sudo rm -f 
 $SSH "$HOST" "cat > $APP/hpscan && chmod +x $APP/hpscan" < "$BIN"
 $SSH "$HOST" "ls -la $APP/hpscan"
 
-echo "-> writing config"
-$SSH "$HOST" "test -f $CFG || HPSCAN_CONFIG=$CFG $APP/hpscan config init >/dev/null;
-  HPSCAN_CONFIG=$CFG $APP/hpscan config set printer '' >/dev/null;
-  HPSCAN_CONFIG=$CFG $APP/hpscan config set name '$NAME' >/dev/null;
-  HPSCAN_CONFIG=$CFG $APP/hpscan config set output_dir '$OUT' >/dev/null;
-  HPSCAN_CONFIG=$CFG $APP/hpscan config show"
+echo "-> writing config (sudo password may be asked)"
+$SSH -t "$HOST" "sudo sh -c 'test -f $CFG || HPSCAN_CONFIG=$CFG $APP/hpscan config init >/dev/null;
+  HPSCAN_CONFIG=$CFG $APP/hpscan config set printer \"\" >/dev/null;
+  HPSCAN_CONFIG=$CFG $APP/hpscan config set name $NAME >/dev/null;
+  HPSCAN_CONFIG=$CFG $APP/hpscan config set output_dir $OUT >/dev/null;
+  grep -E \"^(printer|name|output_dir|format):\" $CFG'"
 
 echo "-> removing any Docker instance so only one client registers as $NAME (sudo password may be asked)"
 $SSH -t "$HOST" "sudo /usr/local/bin/docker rm -f hpscan >/dev/null 2>&1 || true"
@@ -55,7 +55,7 @@ $SSH "$HOST" "HPSCAN_CONFIG=$CFG $APP/hpscan discover" || true
 
 echo "-> installing as a service (sudo password of your NAS user may be asked)"
 if $SSH -t "$HOST" "sudo HPSCAN_CONFIG=$CFG $APP/hpscan install $USERFLAG"; then
-  $SSH "$HOST" "sudo HPSCAN_CONFIG=$CFG $APP/hpscan status; sleep 6; sudo journalctl -u hpscan -n 8 --no-pager"
+  $SSH -t "$HOST" "sudo HPSCAN_CONFIG=$CFG $APP/hpscan status; sleep 6; sudo journalctl -u hpscan -n 8 --no-pager"
 else
   cat <<MSG
 
