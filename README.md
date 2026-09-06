@@ -71,60 +71,41 @@ See [config.yaml](config.yaml) for the annotated sample. Keys:
 
 ## Synology NAS
 
-Two options.
+Two routes. **Use the native route if the scans folder is synced by Cloud
+Sync**: Cloud Sync only notices files written from the host, not from inside
+a Docker container.
 
-### Option A: Docker (Container Manager) - recommended
+### Option A: native binary as a systemd service (recommended)
 
-One command from your Mac (SSH enabled on the NAS, Container Manager installed):
-
-```sh
-./deploy/synology-docker-install.sh inas.local /volume1/Dropbox/ScanDoc iNAS
-```
-
-Re-run it after code changes to rebuild and restart. Manual equivalent:
-copy this whole project folder to the NAS (e.g. `/volume1/docker/hpscan`
-over SMB), then either over SSH:
+Requirements: SSH enabled on the NAS, a DSM account that owns the scans folder
+(e.g. `printer`) with write permission on it.
 
 ```sh
-cd /volume1/docker/hpscan
-mkdir -p config && cp config.yaml config/config.yaml
-# edit config/config.yaml: name: "Synology", output_dir: "/scans", printer: "" (or the printer IP)
-# edit docker-compose.yml: point the /scans volume at your shared folder
-sudo docker compose up -d
-sudo docker logs -f hpscan
+make dist
+./deploy/synology-install.sh inas.local /volume1/Dropbox/ScanDoc iNAS printer
 ```
 
-or in DSM: Container Manager -> Project -> Create -> path `/volume1/docker/hpscan`,
-use the existing docker-compose.yml -> Build. The compose file uses host
-networking so mDNS discovery of the printer works; on a bridge network set
-`printer` to the printer's IP instead.
-
-### Option B: native binary + systemd / Task Scheduler
+The script picks the amd64/arm64 binary, installs it in `/volume1/apps/hpscan`,
+writes the config there, removes any Docker instance, and enables a systemd
+unit running as the given user. Re-run it after code changes. Logs go to
+`/volume1/apps/hpscan/hpscan.log`.
 
 ```sh
-make dist          # on your Mac; produces dist/hpscan-linux-amd64 and -arm64
-./deploy/synology-install.sh inas.local /volume1/Dropbox/ScanDoc iNAS   # does the steps below over SSH
+ssh -t olivier@inas.local 'sudo systemctl status|stop|start|restart hpscan'
+ssh olivier@inas.local 'tail -f /volume1/apps/hpscan/hpscan.log'
 ```
 
-Copy the matching binary (DS918+/DS920+ and most Plus models are `amd64`, J/
-value models are often `arm64`) to e.g. `/volume1/apps/hpscan/hpscan`,
-`chmod +x` it, create the config:
+If the DSM has no systemd the script prints a Task Scheduler recipe instead.
+
+### Option B: Docker
 
 ```sh
-HPSCAN_CONFIG=/volume1/apps/hpscan/config.yaml ./hpscan config init
-HPSCAN_CONFIG=/volume1/apps/hpscan/config.yaml ./hpscan config set output_dir /volume1/scans
+./deploy/synology-docker-install.sh inas.local /volume1/scans iNAS
 ```
 
-Then in DSM: Control Panel -> Task Scheduler -> Create -> Triggered Task ->
-User-defined script, event **Boot-up**, user **root** (or a user that can write
-the scans folder), script:
-
-```sh
-HPSCAN_CONFIG=/volume1/apps/hpscan/config.yaml nohup /volume1/apps/hpscan/hpscan run >> /volume1/apps/hpscan/hpscan.log 2>&1 &
-```
-
-`hpscan stop` and `hpscan status` work through the pidfile written next to the
-config. If your DSM has systemd (DSM 7), `hpscan install` will use it instead.
+Builds the image on the NAS with the legacy `docker-compose`, host networking
+for mDNS, and runs the container as the SSH user (files owned by that user).
+Fine for a plain shared folder; not suitable for Cloud Sync folders (see above).
 
 ## Troubleshooting
 
