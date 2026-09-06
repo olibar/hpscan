@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -95,6 +96,9 @@ func isConfigured(list []string, s discover.Scanner) bool {
 	host := strings.ToLower(strings.TrimSuffix(s.Host, "."))
 	for _, p := range list {
 		p = strings.ToLower(strings.TrimSuffix(p, "."))
+		if h, _, err := net.SplitHostPort(p); err == nil {
+			p = h
+		}
 		if p == host || p == s.IP {
 			return true
 		}
@@ -113,8 +117,12 @@ func printerAdd(cfg config.Config, cfgPath, host string) error {
 		var candidates []string
 		for _, s := range found {
 			if !isConfigured(list, s) {
-				candidates = append(candidates, strings.TrimSuffix(s.Host, "."))
-				fmt.Printf("  %d) %-24s %-16s %s\n", len(candidates), strings.TrimSuffix(s.Host, "."), s.IP, s.Model)
+				entry := strings.TrimSuffix(s.Host, ".")
+				if s.Port != 0 && s.Port != cfg.Port {
+					entry = net.JoinHostPort(entry, strconv.Itoa(s.Port)) // non-default port travels with the entry
+				}
+				candidates = append(candidates, entry)
+				fmt.Printf("  %d) %-24s %-16s port %-5d %s\n", len(candidates), strings.TrimSuffix(s.Host, "."), s.IP, s.Port, s.Model)
 			}
 		}
 		if len(candidates) == 0 {
@@ -148,7 +156,7 @@ func printerRemove(cfg config.Config, cfgPath, host string) error {
 	}
 	var kept []string
 	for _, p := range list {
-		if !strings.EqualFold(strings.TrimSuffix(p, "."), strings.TrimSuffix(host, ".")) {
+		if !strings.EqualFold(hostOnly(p), hostOnly(host)) {
 			kept = append(kept, p)
 		}
 	}
@@ -159,6 +167,15 @@ func printerRemove(cfg config.Config, cfgPath, host string) error {
 		fmt.Println("note: the list is now empty; every HP scanner found at startup will be served")
 	}
 	return savePrinters(cfgPath, kept)
+}
+
+// hostOnly strips an optional :port and trailing dot for comparisons.
+func hostOnly(p string) string {
+	p = strings.TrimSuffix(strings.TrimSpace(p), ".")
+	if h, _, err := net.SplitHostPort(p); err == nil {
+		return h
+	}
+	return p
 }
 
 // pick reads a 1-based choice from r; empty input cancels and returns "".

@@ -91,8 +91,8 @@ See [config.yaml](config.yaml) for the annotated sample. Keys:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `printer` | `""` | Printer hostname(s) or IP(s), comma-separated for several printers. Prefer Bonjour names (`HPxxxxxx.local`, survive IP changes). Empty = serve every HP scanner found via mDNS. Falls back to mDNS if an address stops answering |
-| `port` | `8080` | LEDM port (some models use 80) |
+| `printer` | `""` | Printer hostname(s) or IP(s), comma-separated for several printers; append `:port` to an entry that does not use the default port (`HPxxxxxx.local:80`). Prefer Bonjour names (`HPxxxxxx.local`, survive IP changes). Empty = serve every HP scanner found via mDNS. Falls back to mDNS if an address stops answering |
+| `port` | `8080` | Default LEDM port for entries without `:port` (some models use 80). Auto-discovered printers use the port announced over mDNS |
 | `name` | hostname | Destination name shown on the printer |
 | `output_dir` | `~/Scans` | Where scans are written |
 | `format` | `pdf` | `pdf` or `jpeg`. A PDF/JPEG shortcut chosen on the printer overrides this |

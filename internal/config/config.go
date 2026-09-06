@@ -261,15 +261,17 @@ func Sample(cfg Config) string {
 # Edit by hand or with: hpscan config set <key> <value>
 
 # Printer hostname(s) or IP address(es), comma-separated to serve several
-# printers from one instance. Prefer the Bonjour hostname (e.g.
+# printers from one instance. Append :port to an entry whose port differs
+# from the default below (e.g. HPxxxxxx.local:80). Prefer the Bonjour hostname (e.g.
 # HPxxxxxx.local, shown by "hpscan discover"): it is derived from the printer's
 # MAC address and survives IP changes. Leave empty to auto-discover every
 # HP scanner on the local network via mDNS (at startup). If the configured address stops
 # answering, the daemon falls back to mDNS discovery automatically.
 printer: %q
 
-# HTTP port of the printer's embedded web services. 8080 for most HP
-# LEDM printers (some use 80). Ignored when auto-discovering (mDNS supplies it).
+# Default HTTP port of the printers' embedded web services: 8080 for most HP
+# LEDM printers, 80 for some. Used for entries above without an explicit
+# :port. Auto-discovered printers use the port announced over mDNS.
 port: %d
 
 # Destination name shown in the printer's "Scan to Computer" menu.
