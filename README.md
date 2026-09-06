@@ -159,7 +159,7 @@ changes: the client only makes outgoing connections to the printer.
 | Printer | Protocol | Status |
 |---|---|---|
 | HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology |
-| HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Detected with flatbed + ADF; button scanning under test |
+| HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Works: flatbed + document feeder, Mac + Synology |
 
 The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
 2016 (Photosmart, ENVY, Deskjet, OfficeJet 4xxx-8xxx). If it works for yours,
