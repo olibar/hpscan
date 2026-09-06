@@ -117,6 +117,18 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	return body, nil
 }
 
+// Fetch returns the raw body and status of a GET below the eSCL root; used by
+// the probe command, which wants the body whatever the status.
+func (c *Client) Fetch(ctx context.Context, path string) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	status, _, body, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	return body, status, nil
+}
+
 // Probe reports whether the host answers on the eSCL interface. It is the
 // cheapest way to tell an eSCL-only printer from a LEDM one.
 func (c *Client) Probe(ctx context.Context) bool {
