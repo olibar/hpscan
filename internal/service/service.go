@@ -70,7 +70,8 @@ func (m Manager) Uninstall() error {
 		_ = run("launchctl", "bootout", m.launchdDomain()+"/"+label)
 		return removeIfExists(m.plistPath())
 	case "systemd":
-		_ = run(m.systemctl("disable", "--now", "hpscan")...)
+		_ = run(m.systemctl("stop", "hpscan")...)
+		_ = run(m.systemctl("disable", "hpscan")...)
 		if err := removeIfExists(m.unitPath()); err != nil {
 			return err
 		}
@@ -240,7 +241,11 @@ WantedBy=%s
 	if err := run(m.systemctl("daemon-reload")...); err != nil {
 		return err
 	}
-	if err := run(m.systemctl("enable", "--now", "hpscan")...); err != nil {
+	// Old systemd builds (Synology DSM) do not support "enable --now".
+	if err := run(m.systemctl("enable", "hpscan")...); err != nil {
+		return err
+	}
+	if err := run(m.systemctl("restart", "hpscan")...); err != nil {
 		return err
 	}
 	slog.Info("service: installed systemd unit", "unit", m.unitPath())

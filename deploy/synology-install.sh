@@ -28,10 +28,11 @@ esac
 echo "   $ARCH -> $BIN"
 [ -f "$BIN" ] || { echo "missing $BIN, run: make dist"; exit 1; }
 
-echo "-> copying binary to $HOST:$APP"
-$SSH "$HOST" "mkdir -p $APP && rm -f $APP/hpscan"
-scp -q -o ControlPath=$CTL "$BIN" "$HOST:$APP/hpscan"
-$SSH "$HOST" "chmod +x $APP/hpscan"
+echo "-> copying binary to $HOST:$APP (sudo password may be asked)"
+$SSH -t "$HOST" "sudo mkdir -p $APP && sudo chown \$(id -un) $APP && sudo rm -f $APP/hpscan"
+# scp needs the SFTP service, which DSM disables by default: stream over ssh.
+$SSH "$HOST" "cat > $APP/hpscan && chmod +x $APP/hpscan" < "$BIN"
+$SSH "$HOST" "ls -la $APP/hpscan"
 
 echo "-> writing config"
 $SSH "$HOST" "test -f $CFG || HPSCAN_CONFIG=$CFG $APP/hpscan config init >/dev/null;
@@ -61,7 +62,7 @@ else
 No systemd on this DSM. Create a boot task instead:
   DSM -> Control Panel -> Task Scheduler -> Create -> Triggered Task -> User-defined script
   Event: Boot-up   User: root   Script:
-    HPSCAN_CONFIG=$CFG nohup su $RUNAS -s /bin/sh -c "$APP/hpscan run" >> $APP/hpscan.log 2>&1 &
+    nohup su ${RUNAS:-root} -s /bin/sh -c "$APP/hpscan run --config $CFG" >> $APP/hpscan.log 2>&1 &
 Then right-click the task -> Run.  Check:  tail -f $APP/hpscan.log
 MSG
 fi
