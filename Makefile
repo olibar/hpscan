@@ -18,6 +18,7 @@ dist:
 	GOOS=linux  GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/hpscan-linux-amd64 ./cmd/hpscan
 	GOOS=linux  GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/hpscan-linux-arm64 ./cmd/hpscan
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/hpscan-windows-amd64.exe ./cmd/hpscan
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/hpscan-windows-arm64.exe ./cmd/hpscan
 
 test:
 	go test ./...

@@ -31,7 +31,8 @@ Grab the binary for your platform from the
 [Releases](https://github.com/olibar/hpscan/releases) page
 (`hpscan-darwin-arm64` for Apple Silicon Macs, `hpscan-darwin-amd64` for Intel
 Macs, `hpscan-linux-amd64` / `hpscan-linux-arm64` for NAS and Linux boxes,
-`hpscan-windows-amd64.exe` for Windows), or
+`hpscan-windows-amd64.exe` for Windows on Intel/AMD, `hpscan-windows-arm64.exe`
+for Windows on ARM such as a Parallels VM on Apple Silicon), or
 build from source with Go 1.26+:
 
 ```sh
@@ -144,7 +145,8 @@ Fine for a plain shared folder; not suitable for Cloud Sync folders (see above).
 
 ## Windows
 
-Download `hpscan-windows-amd64.exe`, rename it `hpscan.exe` and put it in a
+Download `hpscan-windows-amd64.exe` (or `-arm64.exe` on Windows on ARM),
+rename it `hpscan.exe` and put it in a
 permanent folder such as `C:\Program Files\hpscan`. In a PowerShell window
 opened **as Administrator**:
 
