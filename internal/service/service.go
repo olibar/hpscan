@@ -27,6 +27,7 @@ type Manager struct {
 	ConfigPath string
 	LogPath    string
 	PidFile    string
+	RunAs      string // systemd only: User= for the unit (empty = root)
 }
 
 // Kind reports the backend in use: launchd, systemd or pidfile.
@@ -223,13 +224,13 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=%s run --config %s
+%sExecStart=%s run --config %s
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=%s
-`, m.Binary, m.ConfigPath, m.wantedBy())
+`, m.userLine(), m.Binary, m.ConfigPath, m.wantedBy())
 	if err := os.MkdirAll(filepath.Dir(m.unitPath()), 0o755); err != nil {
 		return fmt.Errorf("create systemd dir: %w", err)
 	}
@@ -244,6 +245,13 @@ WantedBy=%s
 	}
 	slog.Info("service: installed systemd unit", "unit", m.unitPath())
 	return nil
+}
+
+func (m Manager) userLine() string {
+	if m.RunAs == "" || os.Geteuid() != 0 {
+		return ""
+	}
+	return "User=" + m.RunAs + "\n"
 }
 
 func (m Manager) wantedBy() string {

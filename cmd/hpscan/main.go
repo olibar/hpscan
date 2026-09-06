@@ -65,7 +65,8 @@ Usage: hpscan [flags] <command>
 
 Commands:
   run                      run the client in the foreground
-  install                  install as a startup service and start it
+  install [--user <name>]  install as a startup service and start it
+                           (--user: run the systemd unit as this account)
   uninstall                stop and remove the startup service
   start | stop | restart   control the installed service
   status                   show whether the service is running
@@ -103,7 +104,7 @@ func dispatch(args []string, cfgPath string, verbose bool) error {
 		setupLogging("info", "", verbose)
 		return discoverCmd()
 	case "install", "uninstall", "start", "stop", "restart", "status":
-		return serviceCmd(cmd, cfgPath, verbose)
+		return serviceCmd(cmd, rest, cfgPath, verbose)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -191,11 +192,16 @@ func manager(cfgPath string) service.Manager {
 	}
 }
 
-func serviceCmd(cmd, cfgPath string, verbose bool) error {
+func serviceCmd(cmd string, args []string, cfgPath string, verbose bool) error {
 	setupLogging("info", "", verbose)
 	mgr := manager(cfgPath)
 	switch cmd {
 	case "install":
+		if len(args) == 2 && args[0] == "--user" {
+			mgr.RunAs = args[1] // systemd system unit only
+		} else if len(args) != 0 {
+			return fmt.Errorf("usage: hpscan install [--user <name>]")
+		}
 		if _, err := config.Load(cfgPath); err != nil {
 			return fmt.Errorf("config must be valid before installing: %w", err)
 		}
