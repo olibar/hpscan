@@ -52,10 +52,8 @@ func Browse(ctx context.Context) ([]Scanner, error) {
 	slog.Debug("discover: browse finished", "count", len(found))
 	if len(found) == 0 {
 		// The multicast browse needs UDP 5353, which the system resolver owns
-		// exclusively on Windows. Retry with legacy unicast queries.
-		if ctx.Err() != nil {
-			return found, nil
-		}
+		// exclusively on Windows. Retry with legacy unicast queries. The browse
+		// context has normally expired by now, so use a fresh one.
 		lctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
 		legacy, err := browseLegacy(lctx, mdnsGroup)
