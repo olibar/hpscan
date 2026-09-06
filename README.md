@@ -57,6 +57,7 @@ the terminal / hpscan.
 | `hpscan config init` | Create the config file, auto-detecting the printer |
 | `hpscan config show` / `path` | Print the config / its location |
 | `hpscan config set <key> <value>` | Change one setting (comments are preserved). Restart to apply. |
+| `hpscan printer list` / `add [host]` / `remove [host]` | Manage the printer list; without a host you pick from a numbered list. Restarts the service if running |
 | `hpscan discover` | List HP scanners announced on the network |
 | `hpscan scan [file]` | Trigger a single scan from the computer (handy to test connectivity) |
 | `hpscan probe` | Dump the printer's XML resources for troubleshooting |
@@ -174,9 +175,9 @@ added here. If it does not, the probe output is what is needed to fix it.
   (AirScan) or HP Smart cloud are not supported.
 * Windows service support is implemented but has not been tested on a real
   machine yet; reports welcome.
-* Several printers: list them comma-separated in `printer`, or leave it empty
-  and every HP scanner found at startup is served. Printers appearing later
-  need a restart.
+* Several printers: `hpscan printer add` (or a comma-separated `printer`
+  value), or leave `printer` empty and every HP scanner found at startup is
+  served. Printers appearing later need a restart.
 
 ## Build from source
 

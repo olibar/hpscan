@@ -7,6 +7,7 @@
 //	hpscan start|stop|restart  control the installed service
 //	hpscan status              show service state
 //	hpscan config init|show|set <key> <value>|path
+//	hpscan printer list|add|remove  manage the printer list interactively
 //	hpscan discover            list HP scanners on the network
 //	hpscan scan                trigger one scan from the computer
 //	hpscan probe               dump the printer's XML for troubleshooting
@@ -81,6 +82,9 @@ Commands:
   config show              print the current configuration
   config set <key> <val>   change one setting, e.g. config set output_dir ~/Scans
   config path              print the config file location
+  printer list             show configured printers and those on the network
+  printer add [host]       add a printer (interactive pick when no host given)
+  printer remove [host]    remove a printer (interactive pick when no host given)
   discover                 list HP scanners found on the network
   scan [file]              scan one page now from the computer
   probe [host[:port]]      dump printer XML resources for troubleshooting
@@ -107,6 +111,9 @@ func dispatch(args []string, cfgPath string, verbose bool, runAs string) error {
 	switch cmd {
 	case "config":
 		return configCmd(rest, cfgPath, verbose)
+	case "printer", "printers":
+		setupLogging("info", "", verbose)
+		return printerCmd(rest, cfgPath)
 	case "discover":
 		setupLogging("info", "", verbose)
 		return discoverCmd()
