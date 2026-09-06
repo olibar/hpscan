@@ -29,9 +29,32 @@ func (s Scanner) Address() string {
 	return strings.TrimSuffix(s.Host, ".")
 }
 
-// Browse lists _scanner._tcp services until ctx expires.
+// Browse lists _scanner._tcp services until ctx expires. The multicast browse
+// and a legacy unicast query run side by side and their results are merged:
+// the browse needs UDP 5353, which the system resolver owns exclusively on
+// Windows, while the unicast query works from any port.
 func Browse(ctx context.Context) ([]Scanner, error) {
 	slog.Debug("discover: browsing _scanner._tcp")
+	legacyCh := make(chan []Scanner, 1)
+	go func() {
+		lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		found, err := browseLegacy(lctx, mdnsGroup)
+		if err != nil {
+			slog.Debug("discover: legacy unicast failed", "error", err)
+		}
+		legacyCh <- found
+	}()
+	found, err := browseMulticast(ctx)
+	if err != nil {
+		slog.Debug("discover: multicast browse failed", "error", err)
+	}
+	found = merge(found, <-legacyCh)
+	slog.Debug("discover: browse finished", "count", len(found))
+	return found, nil
+}
+
+func browseMulticast(ctx context.Context) ([]Scanner, error) {
 	// IPv4 only: the IPv6 multicast path is unreliable on Windows and HP printers
 	// announce themselves over IPv4 anyway.
 	resolver, err := zeroconf.NewResolver(zeroconf.SelectIPTraffic(zeroconf.IPv4))
@@ -49,21 +72,25 @@ func Browse(ctx context.Context) ([]Scanner, error) {
 			"port", s.Port, "model", s.Model, "mfg", s.Mfg)
 		found = append(found, s)
 	}
-	slog.Debug("discover: browse finished", "count", len(found))
-	if len(found) == 0 {
-		// The multicast browse needs UDP 5353, which the system resolver owns
-		// exclusively on Windows. Retry with legacy unicast queries. The browse
-		// context has normally expired by now, so use a fresh one.
-		lctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		legacy, err := browseLegacy(lctx, mdnsGroup)
-		if err != nil {
-			slog.Debug("discover: legacy unicast failed", "error", err)
-			return found, nil
-		}
-		found = legacy
-	}
 	return found, nil
+}
+
+// merge unions two result sets, keyed by hostname.
+func merge(a, b []Scanner) []Scanner {
+	seen := map[string]bool{}
+	var out []Scanner
+	for _, s := range append(a, b...) {
+		key := strings.ToLower(strings.TrimSuffix(s.Host, "."))
+		if key == "" {
+			key = s.IP
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // AllHP returns every HP scanner from the browse results.

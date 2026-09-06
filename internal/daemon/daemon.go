@@ -29,7 +29,6 @@ type Daemon struct {
 	client   *ledm.Client
 	flavor   ledm.Flavor
 	destURI  string
-	hostname string
 	caps     ledm.ScanCaps
 	doc      *document // in-progress multi-page PDF, nil when idle
 	jpegPage int       // page counter for jpeg output within one walkup job
@@ -199,7 +198,6 @@ func runOnce(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	d := &Daemon{cfg: cfg, client: client, seen: map[string]string{}}
-	d.hostname, _ = os.Hostname()
 	if err := d.setup(ctx); err != nil {
 		if cfg.Printer == "" {
 			return err
@@ -242,7 +240,9 @@ func (d *Daemon) setup(ctx context.Context) error {
 }
 
 func (d *Daemon) register(ctx context.Context) error {
-	uri, err := d.client.RegisterDestination(ctx, d.flavor, d.cfg.Name, d.hostname)
+	// The printer panel displays the Hostname field, not Name, so send the
+	// configured name in both.
+	uri, err := d.client.RegisterDestination(ctx, d.flavor, d.cfg.Name, d.cfg.Name)
 	if err != nil {
 		return err
 	}
