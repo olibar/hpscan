@@ -46,7 +46,9 @@ func (d *Daemon) esclRegister(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("register as a scan destination: %w", err)
 	}
+	d.esubMu.Lock()
 	d.esub = sub
+	d.esubMu.Unlock()
 	slog.Info("daemon: ready, select this computer on the printer", "printer", d.cfg.Printer,
 		"name", name, "interface", "eSCL", "model", d.ecaps.MakeAndModel,
 		"adf", d.ecaps.HasAdf(), "duplex", d.ecaps.HasAdfDuplex())
@@ -54,61 +56,111 @@ func (d *Daemon) esclRegister(ctx context.Context) error {
 }
 
 func (d *Daemon) esclTeardown() {
-	if d.esub != nil {
+	d.esubMu.Lock()
+	sub := d.esub
+	d.esub = nil
+	d.esubMu.Unlock()
+	if sub != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := d.escl.Unsubscribe(ctx, d.esub); err != nil {
+		if err := d.escl.Unsubscribe(ctx, sub); err != nil {
 			slog.Debug("daemon: unregister failed", "error", err)
 		}
 		cancel()
-		d.esub = nil
 	}
 	if d.doc != nil {
 		d.finishDocument()
 	}
 }
 
-// esclLoop polls the subscription for walkup events until ctx ends.
+// esclLoop watches the subscription for walkup events until ctx ends.
 //
 // The poll is not only how events arrive: it is also what tells the printer
-// this computer is still reachable. Stop polling and the panel reports the
-// computer as unavailable, so there is no "idle" state in which it is safe to
-// back off for long.
+// this computer is still reachable. That is why it runs in its own goroutine
+// rather than inline. Scanning a page takes ten seconds or more, and a handler
+// that scanned inline would stop polling for the whole of it - exactly while
+// the printer is waiting at the "another page or done?" prompt for a host that
+// has gone silent. The panel then pauses and reports that the file could not
+// be saved, even though the pages arrived and were written correctly.
 func (d *Daemon) esclLoop(ctx context.Context) error {
+	events := make(chan *escl.WalkupEvent, 8)
+	pollErr := make(chan error, 1)
+
+	pollCtx, stopPolling := context.WithCancel(ctx)
+	defer stopPolling()
+	go d.esclPoll(pollCtx, events, pollErr)
+
+	const idleTick = time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-pollErr:
+			return err
+		case ev := <-events:
+			if err := d.onESCLEvent(ctx, ev); err != nil {
+				slog.Error("daemon: scan event handling failed", "error", err)
+			}
+		case <-time.After(idleTick):
+			d.expireDocument()
+		}
+	}
+}
+
+// esclPoll reads events and never stops for anything the handler is doing.
+func (d *Daemon) esclPoll(ctx context.Context, events chan<- *escl.WalkupEvent, fatal chan<- error) {
 	const pollInterval = 700 * time.Millisecond
 	failures := 0
 	for ctx.Err() == nil {
-		ev, err := d.escl.NextEvent(ctx, d.esub)
+		ev, err := d.escl.NextEvent(ctx, d.subscription())
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			var se *escl.StatusError
 			if errors.As(err, &se) && se.Status == 404 {
 				// The printer forgot us: rebooted, or the subscription was
 				// evicted to make room for another computer.
 				slog.Warn("daemon: subscription vanished, registering again")
 				if rerr := d.esclRegister(ctx); rerr != nil {
-					return rerr
+					select {
+					case fatal <- rerr:
+					default:
+					}
+					return
 				}
 				continue
 			}
 			failures++
 			slog.Warn("daemon: event poll failed", "error", err, "consecutive", failures)
 			if failures >= 5 {
-				return fmt.Errorf("event polling failed %d times: %w", failures, err)
+				select {
+				case fatal <- fmt.Errorf("event polling failed %d times: %w", failures, err):
+				default:
+				}
+				return
 			}
 			d.sleep(ctx, 3*time.Second)
 			continue
 		}
 		failures = 0
-
 		if ev == nil {
-			d.expireDocument()
 			d.sleep(ctx, pollInterval)
 			continue
 		}
-		if err := d.onESCLEvent(ctx, ev); err != nil {
-			slog.Error("daemon: scan event handling failed", "error", err)
+		select {
+		case events <- ev:
+		case <-ctx.Done():
+			return
 		}
 	}
-	return nil
+}
+
+// subscription reads d.esub under the lock: the poller uses it while the
+// handler may be replacing it after a re-registration.
+func (d *Daemon) subscription() *escl.Subscription {
+	d.esubMu.Lock()
+	defer d.esubMu.Unlock()
+	return d.esub
 }
 
 func (d *Daemon) onESCLEvent(ctx context.Context, ev *escl.WalkupEvent) error {

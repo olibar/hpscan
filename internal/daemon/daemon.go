@@ -39,10 +39,13 @@ type Daemon struct {
 	jpegPage int       // page counter for jpeg output within one walkup job
 	seen     map[string]string
 
-	// eSCL backend, used when the printer has no LEDM interface.
-	escl  *escl.Client
-	esub  *escl.Subscription
-	ecaps escl.Caps
+	// eSCL backend, used when the printer has no LEDM interface. esub is
+	// guarded because the event poller reads it while the handler may be
+	// replacing it after the printer forgets a subscription.
+	escl   *escl.Client
+	esubMu sync.Mutex
+	esub   *escl.Subscription
+	ecaps  escl.Caps
 }
 
 // document accumulates pages until the printer says the job is complete.

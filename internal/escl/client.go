@@ -409,6 +409,20 @@ func (c *Client) ScanPages(ctx context.Context, s ScanSettings) ([][]byte, error
 		}
 		pages = append(pages, page)
 		slog.Info("escl: page received", "page", len(pages), "bytes", len(page))
+
+		// The flatbed produces exactly one page per job, so stop rather than
+		// ask for another. This matters during a walkup scan: an outstanding
+		// NextDocument is a request for the next page, and while one is open
+		// the printer will not offer the user the "another page or done?"
+		// choice - it is waiting to produce a page that only exists if they
+		// say yes. The panel then sits silent and eventually reports that the
+		// file could not be saved, despite the page having arrived intact.
+		// The feeder is different: it really does deliver every sheet from one
+		// job, so there we keep reading until 404.
+		if s.source() == SourcePlaten {
+			slog.Debug("escl: flatbed page collected, leaving the job for the panel to close")
+			break
+		}
 	}
 	if len(pages) == 0 {
 		return nil, fmt.Errorf("scan job %s produced no page: is there paper in the feeder?", jobURL)

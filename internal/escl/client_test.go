@@ -150,7 +150,11 @@ func TestScanPagesCollectsUntil404(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
-	got, err := c.ScanPages(context.Background(), ScanSettings{Resolution: 300, Width: A4Width, Height: A4Height})
+	// The feeder, because only the feeder delivers several pages from one job:
+	// the flatbed stops after one so the panel can offer "another page or done?".
+	got, err := c.ScanPages(context.Background(), ScanSettings{
+		Resolution: 300, Width: A4Width, Height: A4Height, Source: SourceAdf,
+	})
 	if err != nil {
 		t.Fatalf("ScanPages: %v", err)
 	}
@@ -202,6 +206,81 @@ func TestScanPagesRelativeJobLocation(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if deletedPath != "/eSCL/ScanJobs/rel-1" {
 		t.Errorf("cleanup deleted %q, want the job itself", deletedPath)
+	}
+}
+
+// TestPlatenStopsAfterOnePage pins the behaviour that makes walkup scanning
+// work at all. The flatbed yields one page per job, and an outstanding
+// NextDocument is a request for the NEXT page: while one is open the printer
+// will not offer the user "another page or done?", because it is waiting to
+// produce a page that only exists if they say yes. The panel then stalls and
+// reports that the file could not be saved, even though the page arrived.
+func TestPlatenStopsAfterOnePage(t *testing.T) {
+	var nextDocCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/eSCL/ScanJobs":
+			w.Header().Set("Location", "/eSCL/ScanJobs/p1")
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/eSCL/ScanJobs/p1/NextDocument":
+			nextDocCalls++
+			_, _ = w.Write([]byte("page"))
+		case r.Method == http.MethodDelete:
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
+	pages, err := c.ScanPages(context.Background(), ScanSettings{
+		Resolution: 300, Width: A4Width, Height: A4Height, Source: SourcePlaten,
+	})
+	if err != nil {
+		t.Fatalf("ScanPages: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("got %d pages from the flatbed, want 1", len(pages))
+	}
+	// The stub would happily return pages forever. One call proves we stop.
+	if nextDocCalls != 1 {
+		t.Errorf("NextDocument called %d times for a flatbed scan, want exactly 1: "+
+			"a second call blocks the printer's add-page prompt", nextDocCalls)
+	}
+}
+
+// The feeder is the opposite case: one job really does deliver every sheet, so
+// there the client must keep reading until the printer says 404.
+func TestFeederReadsUntilExhausted(t *testing.T) {
+	left := 3
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/eSCL/ScanJobs":
+			w.Header().Set("Location", "/eSCL/ScanJobs/f1")
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/eSCL/ScanJobs/f1/NextDocument":
+			if left == 0 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			left--
+			_, _ = w.Write([]byte("sheet"))
+		case r.Method == http.MethodDelete:
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
+	pages, err := c.ScanPages(context.Background(), ScanSettings{
+		Resolution: 300, Width: A4Width, Height: A4Height, Source: SourceAdf,
+	})
+	if err != nil {
+		t.Fatalf("ScanPages: %v", err)
+	}
+	if len(pages) != 3 {
+		t.Fatalf("got %d sheets from the feeder, want 3", len(pages))
 	}
 }
 
