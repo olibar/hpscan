@@ -1,14 +1,29 @@
 # hpscan - "Scan to Computer" for HP all-in-one printers
 
-A small self-contained service that makes the **Scan to Computer** button on an
-HP Photosmart / OfficeJet / ENVY (tested target: Photosmart 6510 B211a) work
-without HP's software. It registers your Mac or Synology NAS as a destination
-on the printer, waits for you to press Scan on the printer's screen, pulls the
-pages over the network and saves them as PDF (multi-page) or JPEG in the folder
-you choose.
+A small self-contained service that makes the **Scan to Computer** button on
+HP Photosmart / OfficeJet / ENVY all-in-ones work without HP's software. It
+registers your Mac, Windows PC, Linux box or Synology NAS as a destination on
+the printer, waits for you to press Scan on the printer's screen, pulls the
+pages over the network and saves them as PDF or JPEG in the folder you choose.
 
 It speaks the printer's built-in LEDM REST interface (port 8080), the same one
 HP's own utilities use. Nothing is installed on the printer.
+
+## Features
+
+* Single static binary, no runtime. Runs as a startup service: launchd on
+  macOS, systemd on Linux and Synology DSM, Windows service via the Service
+  Control Manager.
+* Several printers from one instance: list them, or let mDNS find them all.
+  `hpscan printer add` / `remove` manage the list interactively.
+* Multi-page PDF: "scan another page" on the flatbed, or the whole stack when
+  the printer has a document feeder with paper in it. JPEG per page otherwise.
+* Honours the shortcut chosen on the printer (Save as Document/PDF -> PDF,
+  Save as Photo/JPEG -> JPEG).
+* Files are written atomically (temp file + rename), so Dropbox, Cloud Sync
+  and similar pick up complete files only.
+* Survives printer IP changes: Bonjour hostnames, plus mDNS re-lookup when a
+  configured address stops answering. Re-registers after printer reboots.
 
 ## Install
 
@@ -33,13 +48,18 @@ hpscan config set output_dir ~/Documents/Scans
 hpscan config set name "My MacBook"   # name shown on the printer screen
 hpscan install                  # installs a launchd agent: starts now and at every login
 hpscan status
+hpscan printer list             # which printers are served, and which are on the network
 ```
 
 On the printer: **Scan -> Computer -> pick your computer name -> pick a
-shortcut (Save as PDF / Save as JPEG) -> Start Scan**. Files appear in
-`output_dir` a few seconds later. Multi-page: keep answering "scan another
-page" on the printer; the PDF is closed when you choose "Done" (or after
-`page_timeout` of inactivity).
+shortcut (Save as Document / Save as Photo) -> Start Scan**. Files appear in
+`output_dir` a few seconds later. Multi-page from the flatbed: keep answering
+"scan another page" on the printer; the PDF is closed when you choose "Done"
+(or after `page_timeout` of inactivity). With paper in the document feeder the
+whole stack becomes one PDF in a single run.
+
+Got a second printer? `hpscan printer add` lists what it finds on the network
+and lets you pick one; the service restarts by itself.
 
 macOS note: the first time, macOS may ask to allow the binary to access the
 **Local Network**. If scans never arrive and the log shows "no route to host",
@@ -51,7 +71,7 @@ the terminal / hpscan.
 | Command | What it does |
 |---|---|
 | `hpscan run` | Run in the foreground (this is what the service runs) |
-| `hpscan install` / `uninstall` | Register / remove the startup service (launchd on Mac, systemd on Linux) |
+| `hpscan install [--user <name>]` / `uninstall` | Register / remove the startup service (launchd on Mac, systemd on Linux, Windows service). `--user` runs a systemd system unit as that account |
 | `hpscan start` / `stop` / `restart` | Control the installed service |
 | `hpscan status` | Is it running? |
 | `hpscan config init` | Create the config file, auto-detecting the printer |
@@ -60,7 +80,8 @@ the terminal / hpscan.
 | `hpscan printer list` / `add [host]` / `remove [host]` | Manage the printer list; without a host you pick from a numbered list. Restarts the service if running |
 | `hpscan discover` | List HP scanners announced on the network |
 | `hpscan scan [file]` | Trigger a single scan from the computer (handy to test connectivity) |
-| `hpscan probe` | Dump the printer's XML resources for troubleshooting |
+| `hpscan probe [host[:port]]` | Dump a printer's XML resources for troubleshooting, the configured one or any address |
+| `hpscan help` | List all commands |
 
 Global flags: `--config <path>` (or `HPSCAN_CONFIG`), `-v` for debug logging.
 
@@ -147,8 +168,13 @@ changes: the client only makes outgoing connections to the printer.
 * `hpscan -v scan` scans one page from the computer: proves network + scanner.
 * `hpscan probe > probe.txt` dumps the printer's discovery tree, scan caps,
   destinations and event table. Attach it when reporting a protocol problem.
-* Printer says "no computer found": the daemon must be running **before** you
-  open the menu on the printer; check `hpscan status` and the log.
+* Printer says "no computer found" or "set up Scan to Computer first": the
+  daemon must be running **before** you open the menu on the printer; check
+  `hpscan status` and look for a "ready" line per printer in the log. Some
+  newer models also have a Scan to Computer on/off switch in their web page
+  (Scan section).
+* Two printers, one shows no computer: check the log has a "ready" line with
+  each printer's name; `hpscan printer list` shows what is configured.
 * After updating the binary, macOS treats it as a new program: the first
   connection attempt may fail with "no route to host" until the Local Network
   permission is re-applied (a prompt may appear). The daemon retries by itself.
@@ -163,21 +189,19 @@ changes: the client only makes outgoing connections to the printer.
 | HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Works: flatbed + document feeder, Mac + Synology |
 
 The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
-2016 (Photosmart, ENVY, Deskjet, OfficeJet 4xxx-8xxx). If it works for yours,
+2020 (Photosmart, ENVY, Deskjet, OfficeJet, OfficeJet Pro). If it works for yours,
 please open an issue with the model and the `hpscan probe` output so it can be
 added here. If it does not, the probe output is what is needed to fix it.
 
 ## Limitations
 
-* Document feeder: used automatically when the printer reports paper in it,
-  one PDF per feeder run. No duplex yet.
-* LEDM printers only. Newer models that expose scan-to-computer through eSCL
-  (AirScan) or HP Smart cloud are not supported.
-* Windows service support is implemented but has not been tested on a real
-  machine yet; reports welcome.
-* Several printers: `hpscan printer add` (or a comma-separated `printer`
-  value), or leave `printer` empty and every HP scanner found at startup is
-  served. Printers appearing later need a restart.
+* No duplex scanning from the feeder yet.
+* LEDM printers only. Models that offer scan-to-computer solely through eSCL
+  (AirScan) or the HP Smart cloud are not supported.
+* Windows service support is implemented but not yet verified on a real
+  machine; reports welcome.
+* In auto-discovery mode (empty `printer`), printers that appear after startup
+  need a service restart.
 
 ## Build from source
 
