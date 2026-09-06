@@ -187,8 +187,8 @@ changes: the client only makes outgoing connections to the printer.
 
 | Printer | Protocol | Status |
 |---|---|---|
-| HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology |
-| HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Works: flatbed + document feeder, Mac + Synology |
+| HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology + Windows |
+| HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Works: flatbed + document feeder, Mac + Synology + Windows |
 
 The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
 2020 (Photosmart, ENVY, Deskjet, OfficeJet, OfficeJet Pro). If it works for yours,
@@ -200,8 +200,6 @@ added here. If it does not, the probe output is what is needed to fix it.
 * No duplex scanning from the feeder yet.
 * LEDM printers only. Models that offer scan-to-computer solely through eSCL
   (AirScan) or the HP Smart cloud are not supported.
-* Windows service support is implemented but not yet verified on a real
-  machine; reports welcome.
 * In auto-discovery mode (empty `printer`), printers that appear after startup
   need a service restart.
 
