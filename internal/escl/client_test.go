@@ -164,6 +164,47 @@ func TestScanPagesCollectsUntil404(t *testing.T) {
 	}
 }
 
+// TestScanPagesRelativeJobLocation covers the firmware that answers the job
+// POST with a server-absolute path instead of a full URL. BaseURL already ends
+// in /eSCL, so a naive join gives /eSCL/eSCL/ScanJobs/... and every page fetch
+// 404s while the scan appears to succeed.
+func TestScanPagesRelativeJobLocation(t *testing.T) {
+	var deletedPath string
+	page := []byte("the-page")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/eSCL/ScanJobs":
+			w.Header().Set("Location", "/eSCL/ScanJobs/rel-1") // no scheme or host
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/eSCL/ScanJobs/rel-1/NextDocument":
+			if page == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write(page)
+			page = nil
+		case r.Method == http.MethodDelete:
+			deletedPath = r.URL.Path
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
+	pages, err := c.ScanPages(context.Background(), ScanSettings{Resolution: 300, Width: A4Width, Height: A4Height})
+	if err != nil {
+		t.Fatalf("ScanPages with a relative Location: %v", err)
+	}
+	if len(pages) != 1 || string(pages[0]) != "the-page" {
+		t.Fatalf("got %d pages: %q", len(pages), pages)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if deletedPath != "/eSCL/ScanJobs/rel-1" {
+		t.Errorf("cleanup deleted %q, want the job itself", deletedPath)
+	}
+}
+
 func TestScanPagesNoPageIsAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {

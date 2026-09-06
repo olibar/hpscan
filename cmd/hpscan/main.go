@@ -440,10 +440,13 @@ func probeCmd(cfg config.Config, args []string) error {
 			return fmt.Errorf("bad port in %q: %w", args[0], err)
 		}
 	}
-	client, err := daemon.Connect(ctx, cfg)
+	// Resolve once and build both clients from the result: with no printer
+	// configured the address comes from mDNS, and cfg.Printer stays empty.
+	host, port, err := daemon.Resolve(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	client := ledm.New(host, port)
 	// LEDM lives on 8080 (sometimes 80); eSCL lives on the default HTTP port
 	// and never on 8080. Dumping both against one base URL would report the
 	// whole of one interface as missing, so each is fetched where it lives.
@@ -469,7 +472,7 @@ func probeCmd(cfg config.Config, args []string) error {
 		fmt.Printf("HTTP %d\n%s\n", status, strings.TrimSpace(string(body)))
 	}
 
-	ec := escl.New(cfg.Printer, 0)
+	ec := escl.New(host, 0)
 	fmt.Printf("\n########## eSCL (%s)\n", ec.BaseURL)
 	for _, p := range []string{"/ScannerCapabilities", "/ScannerStatus", "/eSCLConfig", "/WalkupSubscriptions"} {
 		body, status, err := ec.Fetch(ctx, p)

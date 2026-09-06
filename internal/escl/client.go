@@ -432,8 +432,12 @@ func (c *Client) createJob(ctx context.Context, s ScanSettings) (string, error) 
 	if loc == "" {
 		return "", fmt.Errorf("create scan job: no Location header in %d reply", status)
 	}
-	slog.Debug("escl: scan job created", "job", loc)
-	return strings.TrimSuffix(loc, "/"), nil
+	// Some firmwares answer with a full URL and others with a server-absolute
+	// path. BaseURL already ends in /eSCL, so the latter must be resolved or
+	// every page fetch would go to /eSCL/eSCL/ScanJobs/... and 404.
+	job := c.abs(strings.TrimSuffix(loc, "/"))
+	slog.Debug("escl: scan job created", "job", job)
+	return job, nil
 }
 
 // nextDocument fetches one page. more is false when the job has no page left,
