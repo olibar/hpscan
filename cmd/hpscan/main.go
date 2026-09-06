@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -81,7 +83,7 @@ Commands:
   config path              print the config file location
   discover                 list HP scanners found on the network
   scan [file]              scan one page now from the computer
-  probe                    dump printer XML resources for troubleshooting
+  probe [host[:port]]      dump printer XML resources for troubleshooting
   help                     show this help
 
 Config keys for "config set": printer port name output_dir format resolution
@@ -128,7 +130,7 @@ func dispatch(args []string, cfgPath string, verbose bool, runAs string) error {
 	case "scan":
 		return scanCmd(cfg, rest)
 	case "probe":
-		return probeCmd(cfg)
+		return probeCmd(cfg, rest)
 	}
 	return fmt.Errorf("unknown command %q", cmd)
 }
@@ -367,9 +369,21 @@ func ext(format string) string {
 
 // ---- probe ----------------------------------------------------------------
 
-func probeCmd(cfg config.Config) error {
+// probeCmd dumps the printer's XML. An optional host[:port] argument
+// overrides the configured printer, e.g. to inspect a second device.
+func probeCmd(cfg config.Config, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
+	if len(args) > 0 {
+		host, port, err := net.SplitHostPort(args[0])
+		if err != nil {
+			host, port = args[0], "8080"
+		}
+		cfg.Printer = host
+		if cfg.Port, err = strconv.Atoi(port); err != nil {
+			return fmt.Errorf("bad port in %q: %w", args[0], err)
+		}
+	}
 	client, err := daemon.Connect(ctx, cfg)
 	if err != nil {
 		return err
@@ -383,6 +397,8 @@ func probeCmd(cfg config.Config) error {
 		"/WalkupScanToComp/WalkupScanToCompDestinations",
 		"/WalkupScanToComp/WalkupScanToCompEvent",
 		"/EventMgmt/EventTable",
+		"/eSCL/ScannerCapabilities",
+		"/eSCL/ScannerStatus",
 	}
 	fmt.Printf("printer: %s\n", client.BaseURL)
 	for _, p := range paths {
