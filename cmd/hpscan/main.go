@@ -51,6 +51,9 @@ func main() {
 		fs.Usage()
 		return
 	}
+	// Accept flags after the command too: `hpscan run --config <path>`.
+	_ = fs.Parse(args[1:])
+	args = append(args[:1], fs.Args()...)
 	if err := dispatch(args, *cfgPath, *verbose); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
