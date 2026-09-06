@@ -209,30 +209,48 @@ func (c *Client) Status(ctx context.Context) (ScanStatus, error) {
 	return st, nil
 }
 
-// PlatenCaps is the flatbed scan area (units of 1/300 inch) and resolutions.
-type PlatenCaps struct {
+// SourceCaps is the scan area (units of 1/300 inch) and resolution limits of
+// one input source.
+type SourceCaps struct {
 	MaxWidth      int `xml:"InputSourceCaps>MaxWidth"`
 	MaxHeight     int `xml:"InputSourceCaps>MaxHeight"`
 	MinResolution int `xml:"InputSourceCaps>MinResolution"`
 	MaxResolution int `xml:"InputSourceCaps>MaxResolution"`
+	MaxOpticalX   int `xml:"InputSourceCaps>MaxOpticalXResolution"`
 }
 
-type scanCaps struct {
-	Platen PlatenCaps `xml:"Platen"`
+// EffectiveMaxResolution returns the highest usable resolution, 0 if unknown.
+func (c SourceCaps) EffectiveMaxResolution() int {
+	if c.MaxResolution > 0 {
+		return c.MaxResolution
+	}
+	return c.MaxOpticalX
 }
 
-// Caps reads /Scan/ScanCaps and returns the flatbed limits. Zero values mean
-// the printer did not report them.
-func (c *Client) Caps(ctx context.Context) (PlatenCaps, error) {
+// ScanCaps lists the input sources the scanner offers.
+type ScanCaps struct {
+	Platen SourceCaps  `xml:"Platen"`
+	Adf    *SourceCaps `xml:"Adf"`
+}
+
+// HasAdf reports whether the scanner has a document feeder.
+func (c ScanCaps) HasAdf() bool { return c.Adf != nil }
+
+// Caps reads /Scan/ScanCaps. Zero values mean the printer did not report them.
+func (c *Client) Caps(ctx context.Context) (ScanCaps, error) {
 	r, err := c.get(ctx, "/Scan/ScanCaps")
 	if err != nil {
-		return PlatenCaps{}, fmt.Errorf("scan caps: %w", err)
+		return ScanCaps{}, fmt.Errorf("scan caps: %w", err)
 	}
-	var caps scanCaps
+	var caps ScanCaps
 	if err := xml.Unmarshal(r.Body, &caps); err != nil {
-		return PlatenCaps{}, fmt.Errorf("parse scan caps: %w", err)
+		return ScanCaps{}, fmt.Errorf("parse scan caps: %w", err)
 	}
-	slog.Debug("ledm: platen caps", "max_width", caps.Platen.MaxWidth, "max_height", caps.Platen.MaxHeight,
-		"min_res", caps.Platen.MinResolution, "max_res", caps.Platen.MaxResolution)
-	return caps.Platen, nil
+	slog.Debug("ledm: scan caps", "platen_max_width", caps.Platen.MaxWidth, "platen_max_height", caps.Platen.MaxHeight,
+		"platen_max_res", caps.Platen.EffectiveMaxResolution(), "adf", caps.HasAdf())
+	if caps.Adf != nil {
+		slog.Debug("ledm: adf caps", "max_width", caps.Adf.MaxWidth, "max_height", caps.Adf.MaxHeight,
+			"max_res", caps.Adf.EffectiveMaxResolution())
+	}
+	return caps, nil
 }

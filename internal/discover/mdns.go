@@ -50,23 +50,39 @@ func Browse(ctx context.Context) ([]Scanner, error) {
 	return found, nil
 }
 
+// AllHP returns every HP scanner from the browse results.
+func AllHP(ctx context.Context) ([]Scanner, error) {
+	all, err := Browse(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var hp []Scanner
+	for _, s := range all {
+		if isHP(s) {
+			hp = append(hp, s)
+		}
+	}
+	if len(hp) == 0 {
+		return nil, fmt.Errorf("no HP scanner found via mDNS (%d scanners seen)", len(all))
+	}
+	return hp, nil
+}
+
 // FirstHP returns the first HP scanner from the browse results.
 func FirstHP(ctx context.Context) (Scanner, error) {
-	all, err := Browse(ctx)
+	hp, err := AllHP(ctx)
 	if err != nil {
 		return Scanner{}, err
 	}
-	for _, s := range all {
-		if strings.EqualFold(s.Mfg, "HP") || strings.Contains(strings.ToLower(s.Name), "hp") ||
-			strings.Contains(strings.ToLower(s.Model), "photosmart") {
-			if len(all) > 1 {
-				slog.Warn("discover: several scanners found, using first HP one; set 'printer' in config to pin one",
-					"chosen", s.Name, "total", len(all))
-			}
-			return s, nil
-		}
+	if len(hp) > 1 {
+		slog.Warn("discover: several HP scanners found, using the first", "chosen", hp[0].Name, "total", len(hp))
 	}
-	return Scanner{}, fmt.Errorf("no HP scanner found via mDNS (%d scanners seen)", len(all))
+	return hp[0], nil
+}
+
+func isHP(s Scanner) bool {
+	return strings.EqualFold(s.Mfg, "HP") || strings.Contains(strings.ToLower(s.Name), "hp") ||
+		strings.Contains(strings.ToLower(s.Model), "photosmart")
 }
 
 func fromEntry(e *zeroconf.ServiceEntry) Scanner {

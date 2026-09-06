@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/olibar/hpscan/internal/config"
@@ -27,7 +30,7 @@ type Daemon struct {
 	flavor   ledm.Flavor
 	destURI  string
 	hostname string
-	platen   ledm.PlatenCaps
+	caps     ledm.ScanCaps
 	doc      *document // in-progress multi-page PDF, nil when idle
 	jpegPage int       // page counter for jpeg output within one walkup job
 	seen     map[string]string
@@ -42,8 +45,14 @@ type document struct {
 }
 
 // Connect resolves the printer (config or mDNS) and returns a ready client.
+// cfg.Printer may be "host" or "host:port"; empty means mDNS discovery.
 func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 	host, port := cfg.Printer, cfg.Port
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			host, port = h, n
+		}
+	}
 	if host == "" {
 		slog.Info("daemon: no printer configured, discovering via mDNS")
 		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -64,25 +73,90 @@ func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 	return ledm.New(host, port), nil
 }
 
-// Run blocks until ctx is cancelled, reconnecting after errors.
+// Run blocks until ctx is cancelled. It serves every printer listed in the
+// config (comma-separated) or, when none is configured, every HP scanner
+// found via mDNS, each in its own loop.
 func Run(ctx context.Context, cfg config.Config) error {
 	if err := os.MkdirAll(cfg.ExpandedOutputDir(), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
+	targets, err := resolveTargets(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	slog.Info("daemon: serving printers", "count", len(targets), "targets", strings.Join(targets, ", "))
+	var wg sync.WaitGroup
+	for _, t := range targets {
+		one := cfg
+		one.Printer = t
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, one)
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// resolveTargets returns the printer addresses to serve. Without a configured
+// printer it discovers all HP scanners, retrying until one shows up.
+func resolveTargets(ctx context.Context, cfg config.Config) ([]string, error) {
+	if cfg.Printer != "" {
+		var out []string
+		for _, p := range strings.Split(cfg.Printer, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out, nil
+	}
+	backoff := 5 * time.Second
+	for {
+		slog.Info("daemon: no printer configured, discovering all HP scanners via mDNS")
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		found, err := discover.AllHP(dctx)
+		cancel()
+		if err == nil {
+			var out []string
+			for _, s := range found {
+				port := s.Port
+				if port == 0 {
+					port = 8080
+				}
+				slog.Info("daemon: discovered printer", "name", s.Name, "host", s.Address(), "port", port)
+				out = append(out, net.JoinHostPort(s.Address(), strconv.Itoa(port)))
+			}
+			return out, nil
+		}
+		slog.Warn("daemon: discovery failed, retrying", "error", err, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 60*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+// runLoop keeps one printer session alive, reconnecting after errors.
+func runLoop(ctx context.Context, cfg config.Config) {
 	backoff := 5 * time.Second
 	for {
 		started := time.Now()
 		err := runOnce(ctx, cfg)
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
 		if time.Since(started) > time.Minute {
 			backoff = 5 * time.Second // the session was healthy; do not carry over old backoff
 		}
-		slog.Error("daemon: session ended, will reconnect", "error", err, "retry_in", backoff)
+		slog.Error("daemon: session ended, will reconnect", "printer", cfg.Printer, "error", err, "retry_in", backoff)
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-time.After(backoff):
 		}
 		if backoff < 60*time.Second {
@@ -135,7 +209,7 @@ func (d *Daemon) setup(ctx context.Context) error {
 	if !caps.EventTable {
 		slog.Warn("daemon: printer did not advertise /EventMgmt, trying anyway")
 	}
-	if d.platen, err = d.client.Caps(ctx); err != nil {
+	if d.caps, err = d.client.Caps(ctx); err != nil {
 		slog.Warn("daemon: could not read scan caps, using paper size as-is", "error", err)
 	}
 	return d.register(ctx)
@@ -282,35 +356,45 @@ func (d *Daemon) onScanEvent(ctx context.Context) error {
 	return nil
 }
 
-// scanPage scans one page and either writes it (jpeg) or appends it to the
-// current document (pdf). single forces the document closed afterwards.
+// scanPage scans from the flatbed, or from the document feeder when it has
+// paper, and either writes the pages (jpeg) or appends them to the current
+// document (pdf). single forces the document closed afterwards.
 func (d *Daemon) scanPage(ctx context.Context, dst ledm.Destination, single bool) error {
 	format := d.formatFor(dst.Shortcut)
-	settings := d.settings()
 	wctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	err := d.client.WaitIdle(wctx)
+	st, err := d.client.WaitIdle(wctx)
 	cancel()
 	if err != nil {
 		return err
 	}
-	img, err := d.client.ScanPage(ctx, settings)
+	settings := d.settings(d.caps.HasAdf() && strings.EqualFold(st.AdfState, "Loaded"))
+	pages, err := d.client.ScanPages(ctx, settings)
 	if err != nil {
 		return err
 	}
+	if settings.Source == ledm.SourceAdf {
+		single = true // a feeder run is a complete document
+	}
 	if format == "jpeg" {
-		d.jpegPage++
+		for _, img := range pages {
+			d.jpegPage++
+			if err := d.writeJPEG(img, d.jpegPage); err != nil {
+				return err
+			}
+		}
 		if single {
 			d.jpegPage = 0
-			return d.writeJPEG(img, 1)
 		}
-		return d.writeJPEG(img, d.jpegPage)
+		return nil
 	}
 	if d.doc == nil {
 		d.doc = &document{format: "pdf", started: time.Now()}
 	}
-	d.doc.pages = append(d.doc.pages, pdf.Page{JPEG: img, DPI: settings.Resolution})
+	for _, img := range pages {
+		d.doc.pages = append(d.doc.pages, pdf.Page{JPEG: img, DPI: settings.Resolution})
+	}
 	d.doc.lastPage = time.Now()
-	slog.Info("daemon: page captured", "pages", len(d.doc.pages))
+	slog.Info("daemon: pages captured", "new", len(pages), "total", len(d.doc.pages))
 	if single {
 		d.finishDocument()
 	}
@@ -328,22 +412,29 @@ func (d *Daemon) formatFor(shortcut string) string {
 	return d.cfg.Format
 }
 
-func (d *Daemon) settings() ledm.ScanSettings {
-	s := ledm.ScanSettings{Resolution: d.cfg.Resolution, Color: d.cfg.ColorMode == "color", Format: "Jpeg"}
+func (d *Daemon) settings(useAdf bool) ledm.ScanSettings {
+	s := ledm.ScanSettings{Resolution: d.cfg.Resolution, Color: d.cfg.ColorMode == "color", Format: "Jpeg",
+		Source: ledm.SourcePlaten}
+	caps := d.caps.Platen
+	if useAdf {
+		s.Source = ledm.SourceAdf
+		caps = *d.caps.Adf
+	}
 	if d.cfg.Paper == "letter" {
 		s.Width, s.Height = ledm.LetterWidth, ledm.LetterHeight
 	} else {
 		s.Width, s.Height = ledm.A4Width, ledm.A4Height
 	}
-	if d.platen.MaxWidth > 0 && s.Width > d.platen.MaxWidth {
-		s.Width = d.platen.MaxWidth
+	if caps.MaxWidth > 0 && s.Width > caps.MaxWidth {
+		s.Width = caps.MaxWidth
 	}
-	if d.platen.MaxHeight > 0 && s.Height > d.platen.MaxHeight {
-		s.Height = d.platen.MaxHeight
+	if caps.MaxHeight > 0 && s.Height > caps.MaxHeight {
+		s.Height = caps.MaxHeight
 	}
-	if d.platen.MaxResolution > 0 && s.Resolution > d.platen.MaxResolution {
-		s.Resolution = d.platen.MaxResolution
+	if max := caps.EffectiveMaxResolution(); max > 0 && s.Resolution > max {
+		s.Resolution = max
 	}
+	slog.Debug("daemon: scan settings", "source", s.Source, "width", s.Width, "height", s.Height, "resolution", s.Resolution)
 	return s
 }
 

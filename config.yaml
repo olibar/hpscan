@@ -1,10 +1,11 @@
 # hpscan configuration (sample - copy to ~/.config/hpscan/config.yaml or run `hpscan config init`)
 # Edit by hand or with: hpscan config set <key> <value>
 
-# Printer hostname or IP address. Prefer the Bonjour hostname (e.g.
+# Printer hostname(s) or IP address(es), comma-separated to serve several
+# printers from one instance. Prefer the Bonjour hostname (e.g.
 # HPxxxxxx.local, shown by `hpscan discover`): it is derived from the printer's
-# MAC address and survives IP changes. Leave empty to auto-discover the first
-# HP scanner on the local network via mDNS. If the configured address stops
+# MAC address and survives IP changes. Leave empty to auto-discover every
+# HP scanner on the local network via mDNS (at startup). If the configured address stops
 # answering, the daemon falls back to mDNS discovery automatically.
 printer: ""
 

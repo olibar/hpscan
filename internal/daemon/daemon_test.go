@@ -31,6 +31,7 @@ type fakePrinter struct {
 	jobPolls   int
 	scans      int
 	jpeg       []byte
+	adfLoaded  bool // simulate a document feeder with two sheets
 }
 
 func (p *fakePrinter) fire(typ string) {
@@ -50,10 +51,18 @@ func (p *fakePrinter) handler() http.Handler {
 </ledm:DiscoveryTree>`)
 	})
 	mux.HandleFunc("/Scan/ScanCaps", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `<ScanCaps><Platen><InputSourceCaps><MaxWidth>2550</MaxWidth><MaxHeight>3508</MaxHeight><MaxResolution>1200</MaxResolution></InputSourceCaps></Platen></ScanCaps>`)
+		adf := ""
+		if p.adfLoaded {
+			adf = `<Adf><InputSourceCaps><MaxWidth>2550</MaxWidth><MaxHeight>4200</MaxHeight><MaxOpticalXResolution>300</MaxOpticalXResolution></InputSourceCaps></Adf>`
+		}
+		io.WriteString(w, `<ScanCaps><Platen><InputSourceCaps><MaxWidth>2550</MaxWidth><MaxHeight>3508</MaxHeight><MaxResolution>1200</MaxResolution></InputSourceCaps></Platen>`+adf+`</ScanCaps>`)
 	})
 	mux.HandleFunc("/Scan/Status", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `<ScanStatus><ScannerState>Idle</ScannerState><AdfState>Empty</AdfState></ScanStatus>`)
+		state := "Empty"
+		if p.adfLoaded {
+			state = "Loaded"
+		}
+		io.WriteString(w, `<ScanStatus><ScannerState>Idle</ScannerState><AdfState>`+state+`</AdfState></ScanStatus>`)
 	})
 	mux.HandleFunc("/WalkupScanToComp/WalkupScanToCompDestinations", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -99,8 +108,12 @@ func (p *fakePrinter) handler() http.Handler {
 	})
 	mux.HandleFunc("/Scan/Jobs", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "<scan:InputSource>Platen</scan:InputSource>") {
-			http.Error(w, "bad scan job", 400)
+		want := "<scan:InputSource>Platen</scan:InputSource>"
+		if p.adfLoaded {
+			want = "<scan:InputSource>Adf</scan:InputSource>"
+		}
+		if !strings.Contains(string(body), want) {
+			http.Error(w, "bad scan job: "+string(body), 400)
 			return
 		}
 		p.mu.Lock()
@@ -115,6 +128,10 @@ func (p *fakePrinter) handler() http.Handler {
 		p.jobPolls++
 		n := p.jobPolls
 		p.mu.Unlock()
+		if p.adfLoaded {
+			p.adfJob(w, n)
+			return
+		}
 		switch {
 		case n == 1:
 			io.WriteString(w, `<j:Job xmlns:j="x"><j:JobState>Processing</j:JobState><ScanJob><PreScanPage><PageNumber>1</PageNumber><PageState>PreparingScan</PageState></PreScanPage></ScanJob></j:Job>`)
@@ -129,6 +146,62 @@ func (p *fakePrinter) handler() http.Handler {
 		w.Write(p.jpeg)
 	})
 	return mux
+}
+
+// adfJob emits a two-sheet feeder job: page 1 ready, then page 2, then done.
+func (p *fakePrinter) adfJob(w http.ResponseWriter, n int) {
+	page := func(num int, state string) string {
+		return fmt.Sprintf(`<PreScanPage><PageNumber>%d</PageNumber><PageState>%s</PageState><BinaryURL>/Scan/Jobs/7/Pages/1</BinaryURL></PreScanPage>`, num, state)
+	}
+	switch {
+	case n == 1:
+		fmt.Fprintf(w, `<j:Job xmlns:j="x"><j:JobState>Processing</j:JobState><ScanJob>%s</ScanJob></j:Job>`, page(1, "ReadyToUpload"))
+	case n == 2:
+		fmt.Fprintf(w, `<j:Job xmlns:j="x"><j:JobState>Processing</j:JobState><ScanJob>%s%s</ScanJob></j:Job>`, page(1, "UploadCompleted"), page(2, "ReadyToUpload"))
+	default:
+		fmt.Fprintf(w, `<j:Job xmlns:j="x"><j:JobState>Completed</j:JobState><ScanJob>%s%s</ScanJob></j:Job>`, page(1, "UploadCompleted"), page(2, "UploadCompleted"))
+	}
+}
+
+func TestAdfScanProducesMultiPagePDF(t *testing.T) {
+	var img bytes.Buffer
+	if err := jpeg.Encode(&img, image.NewGray(image.Rect(0, 0, 20, 30)), nil); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakePrinter{jpeg: img.Bytes(), eventType: "HostSelected", adfLoaded: true}
+	srv := httptest.NewServer(p.handler())
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	out := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Printer, cfg.Port, cfg.Name, cfg.OutputDir, cfg.Filename = u.Hostname(), port, "Test Mac", out, "adf"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runOnce(ctx, cfg) }()
+	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.registered })
+	p.fire("ScanRequested")
+	// A feeder run is a complete document: no ScanPagesComplete needed.
+	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(out, "adf.pdf")); return err == nil })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "adf.pdf"))
+	if !strings.Contains(string(data), "/Count 2") {
+		t.Fatalf("expected 2 pages from the feeder, got: %s", firstKB(data))
+	}
+}
+
+func firstKB(b []byte) string {
+	if len(b) > 1024 {
+		b = b[:1024]
+	}
+	return string(b)
 }
 
 func TestWalkupScanToCompFlow(t *testing.T) {

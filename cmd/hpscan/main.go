@@ -326,11 +326,11 @@ func scanCmd(cfg config.Config, args []string) error {
 		settings.Width, settings.Height = ledm.LetterWidth, ledm.LetterHeight
 	}
 	if caps, err := client.Caps(ctx); err == nil {
-		if caps.MaxWidth > 0 && settings.Width > caps.MaxWidth {
-			settings.Width = caps.MaxWidth
+		if caps.Platen.MaxWidth > 0 && settings.Width > caps.Platen.MaxWidth {
+			settings.Width = caps.Platen.MaxWidth
 		}
-		if caps.MaxHeight > 0 && settings.Height > caps.MaxHeight {
-			settings.Height = caps.MaxHeight
+		if caps.Platen.MaxHeight > 0 && settings.Height > caps.Platen.MaxHeight {
+			settings.Height = caps.Platen.MaxHeight
 		}
 	}
 	img, err := client.ScanPage(ctx, settings)

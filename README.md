@@ -69,7 +69,7 @@ See [config.yaml](config.yaml) for the annotated sample. Keys:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `printer` | `""` | Printer hostname (prefer the Bonjour name, e.g. `HPxxxxxx.local`, it survives IP changes) or IP. Empty = mDNS auto-discovery. Falls back to mDNS if the address stops answering |
+| `printer` | `""` | Printer hostname(s) or IP(s), comma-separated for several printers. Prefer Bonjour names (`HPxxxxxx.local`, survive IP changes). Empty = serve every HP scanner found via mDNS. Falls back to mDNS if an address stops answering |
 | `port` | `8080` | LEDM port (some models use 80) |
 | `name` | hostname | Destination name shown on the printer |
 | `output_dir` | `~/Scans` | Where scans are written |
@@ -159,6 +159,7 @@ changes: the client only makes outgoing connections to the printer.
 | Printer | Protocol | Status |
 |---|---|---|
 | HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology |
+| HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Detected with flatbed + ADF; button scanning under test |
 
 The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
 2016 (Photosmart, ENVY, Deskjet, OfficeJet 4xxx-8xxx). If it works for yours,
@@ -167,12 +168,15 @@ added here. If it does not, the probe output is what is needed to fix it.
 
 ## Limitations
 
-* Flatbed only. No document feeder (ADF) or duplex support yet.
+* Document feeder: used automatically when the printer reports paper in it,
+  one PDF per feeder run. No duplex yet.
 * LEDM printers only. Newer models that expose scan-to-computer through eSCL
   (AirScan) or HP Smart cloud are not supported.
 * Windows service support is implemented but has not been tested on a real
   machine yet; reports welcome.
-* One destination per running instance.
+* Several printers: list them comma-separated in `printer`, or leave it empty
+  and every HP scanner found at startup is served. Printers appearing later
+  need a restart.
 
 ## Build from source
 

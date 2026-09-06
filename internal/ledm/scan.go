@@ -18,6 +18,20 @@ type ScanSettings struct {
 	Color      bool   // false = grayscale
 	Format     string // "Jpeg"
 	Quality    int    // JPEG CompressionQFactor, lower is better (15..25 typical)
+	Source     string // "Platen" (default) or "Adf"
+}
+
+// Input sources.
+const (
+	SourcePlaten = "Platen"
+	SourceAdf    = "Adf"
+)
+
+func (s ScanSettings) source() string {
+	if s.Source == "" {
+		return SourcePlaten
+	}
+	return s.Source
 }
 
 // Paper sizes in 1/300 inch units.
@@ -50,12 +64,12 @@ func (s ScanSettings) xml() string {
 		`<scan:Width>%d</scan:Width><scan:Height>%d</scan:Height>`+
 		`<scan:Format>%s</scan:Format><scan:CompressionQFactor>%d</scan:CompressionQFactor>`+
 		`<scan:ColorSpace>%s</scan:ColorSpace><scan:BitDepth>8</scan:BitDepth>`+
-		`<scan:InputSource>Platen</scan:InputSource><scan:GrayRendering>NTSC</scan:GrayRendering>`+
+		`<scan:InputSource>%s</scan:InputSource><scan:GrayRendering>NTSC</scan:GrayRendering>`+
 		`<scan:ToneMap><scan:Gamma>1000</scan:Gamma><scan:Brightness>1000</scan:Brightness>`+
 		`<scan:Contrast>1000</scan:Contrast><scan:Highlite>179</scan:Highlite><scan:Shadow>25</scan:Shadow></scan:ToneMap>`+
 		`<scan:ContentType>Document</scan:ContentType>`+
 		`</scan:ScanJob>`,
-		s.Resolution, s.Resolution, s.Width, s.Height, format, q, color)
+		s.Resolution, s.Resolution, s.Width, s.Height, format, q, color, s.source())
 }
 
 type jobXML struct {
@@ -71,20 +85,21 @@ type jobXML struct {
 	} `xml:"ScanJob>PostScanPage"`
 }
 
-// WaitIdle polls /Scan/Status until the scanner reports Idle or ctx ends.
-func (c *Client) WaitIdle(ctx context.Context) error {
+// WaitIdle polls /Scan/Status until the scanner reports Idle or ctx ends,
+// returning the last status (which includes the feeder state).
+func (c *Client) WaitIdle(ctx context.Context) (ScanStatus, error) {
 	for {
 		st, err := c.Status(ctx)
 		if err != nil {
-			return err
+			return st, err
 		}
 		if strings.EqualFold(st.ScannerState, "Idle") {
-			return nil
+			return st, nil
 		}
 		slog.Debug("ledm: scanner busy, waiting", "state", st.ScannerState)
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait idle: %w", ctx.Err())
+			return st, fmt.Errorf("wait idle: %w", ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
@@ -92,33 +107,50 @@ func (c *Client) WaitIdle(ctx context.Context) error {
 
 // ScanPage runs one flatbed scan and returns the image bytes (JPEG).
 func (c *Client) ScanPage(ctx context.Context, s ScanSettings) ([]byte, error) {
-	slog.Info("ledm: starting scan", "resolution", s.Resolution, "width", s.Width, "height", s.Height, "color", s.Color)
+	s.Source = SourcePlaten
+	pages, err := c.ScanPages(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return pages[0], nil
+}
+
+// ScanPages runs one scan job and returns every page it produced: one for the
+// flatbed, one per sheet for the document feeder.
+func (c *Client) ScanPages(ctx context.Context, s ScanSettings) ([][]byte, error) {
+	slog.Info("ledm: starting scan", "source", s.source(), "resolution", s.Resolution,
+		"width", s.Width, "height", s.Height, "color", s.Color)
 	jobURL, err := c.createJob(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-	var image []byte
+	var pages [][]byte
+	got := map[int]bool{}
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
 		job, err := c.getJob(ctx, jobURL)
 		if err != nil {
 			return nil, err
 		}
-		if image == nil {
-			if url := readyPage(job); url != "" {
-				if image, err = c.download(ctx, url); err != nil {
-					return nil, err
-				}
+		for _, p := range job.Pre {
+			if got[p.PageNumber] || !strings.EqualFold(p.PageState, "ReadyToUpload") || p.BinaryURL == "" {
+				continue
 			}
+			img, err := c.download(ctx, p.BinaryURL)
+			if err != nil {
+				return nil, err
+			}
+			got[p.PageNumber] = true
+			pages = append(pages, img)
+			deadline = time.Now().Add(5 * time.Minute)
+			slog.Info("ledm: page received", "page", p.PageNumber, "bytes", len(img))
 		}
-		done := strings.EqualFold(job.State, "Completed") || strings.EqualFold(job.State, "Canceled") ||
-			strings.EqualFold(job.State, "Aborted")
-		if done || (image != nil && uploadCompleted(job)) {
-			if image == nil {
+		if jobFinished(job, s.source(), len(pages)) {
+			if len(pages) == 0 {
 				return nil, fmt.Errorf("scan job ended in state %q without a page", job.State)
 			}
-			slog.Info("ledm: scan finished", "job", jobURL, "state", job.State, "bytes", len(image))
-			return image, nil
+			slog.Info("ledm: scan finished", "job", jobURL, "state", job.State, "pages", len(pages))
+			return pages, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -127,6 +159,17 @@ func (c *Client) ScanPage(ctx context.Context, s ScanSettings) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("scan job %s did not finish within 5 minutes", jobURL)
+}
+
+// jobFinished decides when to stop polling. Some firmwares never leave
+// "Processing" for flatbed jobs, so a single uploaded page is enough there;
+// feeder jobs run until the printer reports a terminal state.
+func jobFinished(j jobXML, source string, pages int) bool {
+	switch strings.ToLower(j.State) {
+	case "completed", "canceled", "aborted":
+		return true
+	}
+	return source == SourcePlaten && pages > 0 && uploadCompleted(j)
 }
 
 func (c *Client) createJob(ctx context.Context, s ScanSettings) (string, error) {
@@ -157,16 +200,6 @@ func (c *Client) getJob(ctx context.Context, url string) (jobXML, error) {
 	}
 	slog.Debug("ledm: scan job state", "state", job.State, "pre_pages", len(job.Pre), "post_pages", len(job.Post))
 	return job, nil
-}
-
-// readyPage returns the BinaryURL of the first page ready for download.
-func readyPage(j jobXML) string {
-	for _, p := range j.Pre {
-		if strings.EqualFold(p.PageState, "ReadyToUpload") && p.BinaryURL != "" {
-			return p.BinaryURL
-		}
-	}
-	return ""
 }
 
 func uploadCompleted(j jobXML) bool {
