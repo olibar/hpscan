@@ -1,13 +1,16 @@
 #!/bin/sh
 # Install (or update) hpscan on a Synology NAS as a Container Manager / Docker
 # project, over SSH. Run from the project folder on your Mac:
-#   ./deploy/synology-docker-install.sh [user@]inas.local /volume1/Dropbox/ScanDoc iNAS
+#   ./deploy/synology-docker-install.sh [user@]inas.local /volume1/Dropbox/ScanDoc iNAS [run_as_user]
+# run_as_user is the NAS account that will own the scanned files (default: the
+# SSH user). It must have write permission on the scans folder.
 # Re-run the same command after code changes to rebuild and restart.
 set -eu
 
 HOST="${1:?usage: $0 [user@]host scans_dir [name]}"
 OUT="${2:?usage: $0 [user@]host scans_dir [name]}"
 NAME="${3:-Synology}"
+RUNAS="${4:-}"
 DEST=/volume1/docker/hpscan
 # Synology keeps docker in /usr/local/bin, which is not on the PATH of a
 # non-interactive SSH session; use absolute paths throughout.
@@ -30,12 +33,18 @@ COPYFILE_DISABLE=1 tar --no-xattrs -czf - cmd internal go.mod go.sum Dockerfile 
   | $SSH "$HOST" "tar -xzf - -C $DEST"
 
 echo "-> configuring"
+# Run the container as a NAS user so scans are owned by that user (Cloud
+# Sync ignores files created by root).
+UIDGID=$($SSH "$HOST" "id -u $RUNAS && id -g $RUNAS" | tr '\n' ':' | sed 's/:$//')
+case "$UIDGID" in *:*) ;; *) echo "cannot resolve NAS user '$RUNAS'"; exit 1 ;; esac
+echo "   container will run as ${RUNAS:-the SSH user} (uid:gid $UIDGID)"
 $SSH "$HOST" "cd $DEST &&
+  sed -i 's|^ *#* *user: .*|    user: \"$UIDGID\"|' docker-compose.yml &&
   sed -i 's|- /volume1/scans:/scans|- $OUT:/scans|' docker-compose.yml &&
   if [ ! -f config/config.yaml ]; then cp config.yaml config/config.yaml; fi &&
   sed -i 's|^printer:.*|printer: \"\"|; s|^name:.*|name: \"$NAME\"|; s|^output_dir:.*|output_dir: \"/scans\"|' config/config.yaml &&
   grep -E '^(printer|name|output_dir|format):' config/config.yaml &&
-  grep -- '/scans' docker-compose.yml"
+  grep -E -- '/scans|user:' docker-compose.yml"
 
 echo "-> building and starting the container (sudo password of your NAS user may be asked)"
 # sudo resets PATH and the old docker-compose shells out to plain "docker",

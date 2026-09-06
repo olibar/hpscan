@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -365,22 +366,37 @@ func (d *Daemon) finishDocument() {
 		return
 	}
 	path := d.outputPath("pdf", 0)
-	f, err := os.Create(path)
-	if err != nil {
-		slog.Error("daemon: create pdf failed", "path", path, "error", err)
+	var buf bytes.Buffer
+	if err := pdf.Write(&buf, doc.pages); err != nil {
+		slog.Error("daemon: build pdf failed", "path", path, "error", err)
 		return
 	}
-	defer f.Close()
-	if err := pdf.Write(f, doc.pages); err != nil {
+	if err := writeAtomic(path, buf.Bytes()); err != nil {
 		slog.Error("daemon: write pdf failed", "path", path, "error", err)
 		return
 	}
 	slog.Info("daemon: saved", "path", path, "pages", len(doc.pages))
 }
 
+// writeAtomic writes to a hidden temporary file in the same folder and
+// renames it into place, so sync tools (Cloud Sync, Dropbox) see one
+// complete file instead of a growing one.
+func writeAtomic(path string, data []byte) error {
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".part")
+	slog.Debug("daemon: writing", "tmp", tmp, "bytes", len(data))
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename to %s: %w", path, err)
+	}
+	return nil
+}
+
 func (d *Daemon) writeJPEG(img []byte, page int) error {
 	path := d.outputPath("jpg", page)
-	if err := os.WriteFile(path, img, 0o644); err != nil {
+	if err := writeAtomic(path, img); err != nil {
 		return fmt.Errorf("write jpeg: %w", err)
 	}
 	slog.Info("daemon: saved", "path", path, "bytes", len(img))
