@@ -32,6 +32,7 @@ type fakePrinter struct {
 	scans      int
 	jpeg       []byte
 	adfLoaded  bool // simulate a document feeder with two sheets
+	polled     bool // the daemon has read the event table at least once
 }
 
 func (p *fakePrinter) fire(typ string) {
@@ -96,6 +97,7 @@ func (p *fakePrinter) handler() http.Handler {
 	mux.HandleFunc("/EventMgmt/EventTable", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		aging := p.aging
+		p.polled = true
 		p.mu.Unlock()
 		etag := strconv.Itoa(aging)
 		if r.Header.Get("If-None-Match") == etag {
@@ -183,7 +185,10 @@ func TestAdfScanProducesMultiPagePDF(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runOnce(ctx, cfg) }()
-	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.registered })
+	// Wait for the baseline event-table poll as well as registration. The
+	// daemon records the current aging stamps when its loop starts, so an
+	// event fired before that is seen as old and never acted on.
+	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.registered && p.polled })
 	p.fire("ScanRequested")
 	// A feeder run is a complete document: no ScanPagesComplete needed.
 	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(out, "adf.pdf")); return err == nil })
@@ -228,7 +233,10 @@ func TestWalkupScanToCompFlow(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runOnce(ctx, cfg) }()
 
-	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.registered })
+	// Wait for the baseline event-table poll as well as registration. The
+	// daemon records the current aging stamps when its loop starts, so an
+	// event fired before that is seen as old and never acted on.
+	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.registered && p.polled })
 	p.fire("ScanRequested")
 	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.scans == 1 })
 	time.Sleep(300 * time.Millisecond)
