@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olivier/hpscan/internal/config"
+	"github.com/olibar/hpscan/internal/config"
 )
 
 // fakePrinter emulates the LEDM endpoints of a WalkupScanToComp printer.

@@ -26,12 +26,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/olivier/hpscan/internal/config"
-	"github.com/olivier/hpscan/internal/daemon"
-	"github.com/olivier/hpscan/internal/discover"
-	"github.com/olivier/hpscan/internal/ledm"
-	"github.com/olivier/hpscan/internal/pdf"
-	"github.com/olivier/hpscan/internal/service"
+	"github.com/olibar/hpscan/internal/config"
+	"github.com/olibar/hpscan/internal/daemon"
+	"github.com/olibar/hpscan/internal/discover"
+	"github.com/olibar/hpscan/internal/ledm"
+	"github.com/olibar/hpscan/internal/pdf"
+	"github.com/olibar/hpscan/internal/service"
 )
 
 var version = "dev"

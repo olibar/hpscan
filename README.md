@@ -10,14 +10,26 @@ you choose.
 It speaks the printer's built-in LEDM REST interface (port 8080), the same one
 HP's own utilities use. Nothing is installed on the printer.
 
+## Install
+
+Grab the binary for your platform from the
+[Releases](https://github.com/olibar/hpscan/releases) page
+(`hpscan-darwin-arm64` for Apple Silicon Macs, `hpscan-darwin-amd64` for Intel
+Macs, `hpscan-linux-amd64` / `hpscan-linux-arm64` for NAS and Linux boxes), or
+build from source with Go 1.26+:
+
+```sh
+go install github.com/olibar/hpscan/cmd/hpscan@latest   # or: make build
+```
+
 ## Quick start (Mac)
 
 ```sh
-make build                      # or: go build -o hpscan ./cmd/hpscan
+make build                      # skip if you downloaded a release binary (rename it to hpscan)
 sudo make install-local         # copies ./hpscan to /usr/local/bin
 hpscan config init              # finds the printer via Bonjour, writes ~/.config/hpscan/config.yaml
 hpscan config set output_dir ~/Documents/Scans
-hpscan config set name "Olivier MacBook"   # name shown on the printer screen
+hpscan config set name "My MacBook"   # name shown on the printer screen
 hpscan install                  # installs a launchd agent: starts now and at every login
 hpscan status
 ```
@@ -56,7 +68,7 @@ See [config.yaml](config.yaml) for the annotated sample. Keys:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `printer` | `""` | Printer hostname (prefer the Bonjour name, e.g. `HP058DA0.local`, it survives IP changes) or IP. Empty = mDNS auto-discovery. Falls back to mDNS if the address stops answering |
+| `printer` | `""` | Printer hostname (prefer the Bonjour name, e.g. `HPxxxxxx.local`, it survives IP changes) or IP. Empty = mDNS auto-discovery. Falls back to mDNS if the address stops answering |
 | `port` | `8080` | LEDM port (some models use 80) |
 | `name` | hostname | Destination name shown on the printer |
 | `output_dir` | `~/Scans` | Where scans are written |
@@ -78,11 +90,11 @@ a Docker container.
 ### Option A: native binary as a systemd service (recommended)
 
 Requirements: SSH enabled on the NAS, a DSM account that owns the scans folder
-(e.g. `printer`) with write permission on it.
+(e.g. `scanner`) with write permission on it.
 
 ```sh
 make dist
-./deploy/synology-install.sh inas.local /volume1/Dropbox/ScanDoc iNAS printer
+./deploy/synology-install.sh nas.local /volume1/scans NAS scanner
 ```
 
 The script picks the amd64/arm64 binary, installs it in `/volume1/apps/hpscan`,
@@ -91,8 +103,8 @@ unit running as the given user. Re-run it after code changes. Logs go to
 `/volume1/apps/hpscan/hpscan.log`.
 
 ```sh
-ssh -t olivier@inas.local 'sudo systemctl status|stop|start|restart hpscan'
-ssh olivier@inas.local 'tail -f /volume1/apps/hpscan/hpscan.log'
+ssh -t user@nas.local 'sudo systemctl status|stop|start|restart hpscan'
+ssh user@nas.local 'tail -f /volume1/apps/hpscan/hpscan.log'
 ```
 
 If the DSM has no systemd the script prints a Task Scheduler recipe instead.
@@ -100,7 +112,7 @@ If the DSM has no systemd the script prints a Task Scheduler recipe instead.
 ### Option B: Docker
 
 ```sh
-./deploy/synology-docker-install.sh inas.local /volume1/scans iNAS
+./deploy/synology-docker-install.sh nas.local /volume1/scans NAS
 ```
 
 Builds the image on the NAS with the legacy `docker-compose`, host networking
@@ -120,6 +132,32 @@ Fine for a plain shared folder; not suitable for Cloud Sync folders (see above).
 * After a printer power cycle, registrations are lost; the daemon re-registers
   automatically on the next event or reconnect.
 
+## Tested devices
+
+| Printer | Protocol | Status |
+|---|---|---|
+| HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology |
+
+The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
+2016 (Photosmart, ENVY, Deskjet, OfficeJet 4xxx-8xxx). If it works for yours,
+please open an issue with the model and the `hpscan probe` output so it can be
+added here. If it does not, the probe output is what is needed to fix it.
+
+## Limitations
+
+* Flatbed only. No document feeder (ADF) or duplex support yet.
+* LEDM printers only. Newer models that expose scan-to-computer through eSCL
+  (AirScan) or HP Smart cloud are not supported.
+* macOS and Linux (systemd, Synology DSM) services. No Windows service yet;
+  `hpscan run` works on Windows from a terminal if built with `GOOS=windows`,
+  but startup integration is not provided.
+* One destination per running instance.
+
 ## Build from source
 
-Go 1.26+. `make build`, `make test`, `make dist`.
+Go 1.26+. `make build`, `make test`, `make dist` (cross-compiles all targets).
+Pushing a tag `v*` builds and publishes release binaries via GitHub Actions.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

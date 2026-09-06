@@ -1,4 +1,4 @@
-module github.com/olivier/hpscan
+module github.com/olibar/hpscan
 
 go 1.26.1
 

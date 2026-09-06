@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install (or update) hpscan on a Synology NAS as a Container Manager / Docker
 # project, over SSH. Run from the project folder on your Mac:
-#   ./deploy/synology-docker-install.sh [user@]inas.local /volume1/Dropbox/ScanDoc iNAS [run_as_user]
+#   ./deploy/synology-docker-install.sh [user@]nas.local /volume1/scans NAS [run_as_user]
 # run_as_user is the NAS account that will own the scanned files (default: the
 # SSH user). It must have write permission on the scans folder.
 # Re-run the same command after code changes to rebuild and restart.

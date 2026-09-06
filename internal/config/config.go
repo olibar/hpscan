@@ -265,7 +265,7 @@ func Sample(cfg Config) string {
 # Edit by hand or with: hpscan config set <key> <value>
 
 # Printer hostname or IP address. Prefer the Bonjour hostname (e.g.
-# HP058DA0.local, shown by "hpscan discover"): it is derived from the printer's
+# HPxxxxxx.local, shown by "hpscan discover"): it is derived from the printer's
 # MAC address and survives IP changes. Leave empty to auto-discover the first
 # HP scanner on the local network via mDNS. If the configured address stops
 # answering, the daemon falls back to mDNS discovery automatically.

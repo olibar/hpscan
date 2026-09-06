@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/olivier/hpscan/internal/config"
-	"github.com/olivier/hpscan/internal/discover"
-	"github.com/olivier/hpscan/internal/ledm"
-	"github.com/olivier/hpscan/internal/pdf"
+	"github.com/olibar/hpscan/internal/config"
+	"github.com/olibar/hpscan/internal/discover"
+	"github.com/olibar/hpscan/internal/ledm"
+	"github.com/olibar/hpscan/internal/pdf"
 )
 
 // Daemon holds the connection state for one printer.

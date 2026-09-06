@@ -12,8 +12,8 @@ import (
 
 // Scanner is one _scanner._tcp service found on the local network.
 type Scanner struct {
-	Name  string // mDNS instance name, e.g. "Photosmart 6510 series [058DA0]"
-	Host  string // hostname, e.g. "HP058DA0.local."
+	Name  string // mDNS instance name, e.g. "Photosmart 6510 series [xxxxxx]"
+	Host  string // hostname, e.g. "HPxxxxxx.local."
 	IP    string // first IPv4 address, may be empty
 	Port  int
 	Model string // "ty" TXT record

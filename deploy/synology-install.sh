@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install hpscan on a Synology NAS over SSH. Run from the project folder on
 # your Mac after `make dist`:
-#   ./deploy/synology-install.sh [user@]inas.local /volume1/Dropbox/ScanDoc iNAS [run_as_user]
+#   ./deploy/synology-install.sh [user@]nas.local /volume1/scans NAS [run_as_user]
 # run_as_user: NAS account that owns the scanned files (default root). It needs
 # write permission on the output folder. Use this route rather than Docker when
 # Cloud Sync must pick up the scans: Cloud Sync does not see writes made from
