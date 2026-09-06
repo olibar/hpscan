@@ -1,0 +1,4 @@
+/dist/
+/hpscan
+*.log
+*.pid

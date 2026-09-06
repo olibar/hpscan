@@ -1,0 +1,23 @@
+# Synology Container Manager / Docker deployment.
+# 1. Put a config.yaml in ./config (copy config.yaml from this folder) with
+#      printer: ""            (auto-discover; works because of network_mode: host)
+#      output_dir: "/scans"
+#      name: "Synology"
+# 2. Change the /scans volume below to the shared folder you want scans in.
+# 3. docker compose up -d      (or Container Manager -> Project -> Create)
+version: "3.8"
+services:
+  hpscan:
+    build: .
+    image: hpscan:latest
+    container_name: hpscan
+    restart: unless-stopped
+    # Host networking lets the container use mDNS to find the printer and
+    # resolve its Bonjour name. Alternative: bridge network + printer IP.
+    network_mode: host
+    volumes:
+      - ./config:/config
+      - /volume1/scans:/scans
+    # Files are created as root by default. To create them as your DSM user,
+    # find its ids with `id <user>` over SSH and uncomment:
+    # user: "1026:100"

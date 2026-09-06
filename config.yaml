@@ -1,0 +1,47 @@
+# hpscan configuration (sample - copy to ~/.config/hpscan/config.yaml or run `hpscan config init`)
+# Edit by hand or with: hpscan config set <key> <value>
+
+# Printer hostname or IP address. Prefer the Bonjour hostname (e.g.
+# HP058DA0.local, shown by `hpscan discover`): it is derived from the printer's
+# MAC address and survives IP changes. Leave empty to auto-discover the first
+# HP scanner on the local network via mDNS. If the configured address stops
+# answering, the daemon falls back to mDNS discovery automatically.
+printer: ""
+
+# HTTP port of the printer's embedded web services. 8080 for most HP
+# LEDM printers (some use 80). Ignored when auto-discovering (mDNS supplies it).
+port: 8080
+
+# Destination name shown in the printer's "Scan to Computer" menu.
+name: "My Computer"
+
+# Folder where scans are saved. "~" expands to the home directory.
+output_dir: "~/Scans"
+
+# Default output format: pdf | jpeg
+# When the printer offers "Save as PDF" / "Save as JPEG" shortcuts, the
+# shortcut chosen on the printer wins over this default.
+format: pdf
+
+# Scan resolution in DPI: 75 .. 1200 (200 or 300 is typical for documents).
+resolution: 300
+
+# color | gray
+color_mode: color
+
+# Scan area: a4 | letter (clamped to the scanner's maximum).
+paper: a4
+
+# Filename pattern without extension. Tokens: {date} {time} {page}
+# {page} is only used for jpeg output.
+filename: "scan_{date}_{time}"
+
+# For multi-page PDF: how long to wait for another page before the
+# document is closed if the printer never sends a "pages complete" event.
+page_timeout: 120s
+
+# debug | info | warn | error
+log_level: info
+
+# Log file path. Empty logs to stderr (launchd / systemd capture it).
+log_file: ""
