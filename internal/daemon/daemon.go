@@ -141,6 +141,34 @@ func resolveTargets(ctx context.Context, cfg config.Config) ([]string, error) {
 	}
 }
 
+// rediscover finds the configured printer (by Bonjour hostname or IP) in the
+// mDNS results and returns a client for its current address. It never
+// substitutes a different printer.
+func rediscover(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
+	want := strings.ToLower(strings.TrimSuffix(cfg.Printer, "."))
+	if h, _, err := net.SplitHostPort(want); err == nil {
+		want = h
+	}
+	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	found, err := discover.AllHP(dctx)
+	if err != nil {
+		return nil, fmt.Errorf("rediscover %s: %w", cfg.Printer, err)
+	}
+	for _, s := range found {
+		host := strings.ToLower(strings.TrimSuffix(s.Host, "."))
+		if host == want || s.IP == want {
+			slog.Info("daemon: printer found via mDNS", "printer", cfg.Printer, "host", s.Address(), "port", s.Port)
+			port := s.Port
+			if port == 0 {
+				port = 8080
+			}
+			return ledm.New(s.Address(), port), nil
+		}
+	}
+	return nil, fmt.Errorf("printer %s not found via mDNS (%d HP scanners seen)", cfg.Printer, len(found))
+}
+
 // runLoop keeps one printer session alive, reconnecting after errors.
 func runLoop(ctx context.Context, cfg config.Config) {
 	backoff := 5 * time.Second
@@ -177,11 +205,9 @@ func runOnce(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		// The pinned address may be stale (DHCP gave the printer a new IP):
-		// fall back to mDNS discovery for this session.
-		slog.Warn("daemon: configured printer unreachable, trying mDNS discovery", "printer", cfg.Printer, "error", err)
-		fallback := cfg
-		fallback.Printer = ""
-		if d.client, err = Connect(ctx, fallback); err != nil {
+		// look for the same printer via mDNS for this session.
+		slog.Warn("daemon: configured printer unreachable, looking it up via mDNS", "printer", cfg.Printer, "error", err)
+		if d.client, err = rediscover(ctx, cfg); err != nil {
 			return err
 		}
 		if err := d.setup(ctx); err != nil {
@@ -221,7 +247,8 @@ func (d *Daemon) register(ctx context.Context) error {
 		return err
 	}
 	d.destURI = uri
-	slog.Info("daemon: ready, select this computer on the printer", "name", d.cfg.Name, "flavor", d.flavor.String())
+	slog.Info("daemon: ready, select this computer on the printer", "printer", d.cfg.Printer, "name", d.cfg.Name,
+		"flavor", d.flavor.String(), "adf", d.caps.HasAdf())
 	return nil
 }
 
