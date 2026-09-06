@@ -138,29 +138,6 @@ func (c *Client) GetDestination(ctx context.Context, uri string) (Destination, e
 	return dst, nil
 }
 
-type destinationsXML struct {
-	Comp []destinationXML `xml:"WalkupScanToCompDestination"`
-	Old  []destinationXML `xml:"WalkupScanDestination"`
-}
-
-// ListDestinations returns every destination currently registered on the printer.
-func (c *Client) ListDestinations(ctx context.Context, f Flavor) ([]Destination, error) {
-	r, err := c.get(ctx, f.destinationsPath())
-	if err != nil {
-		return nil, fmt.Errorf("list destinations: %w", err)
-	}
-	var list destinationsXML
-	if err := xml.Unmarshal(r.Body, &list); err != nil {
-		return nil, fmt.Errorf("parse destinations: %w", err)
-	}
-	var out []Destination
-	for _, d := range append(list.Comp, list.Old...) {
-		out = append(out, d.toDestination(""))
-	}
-	slog.Debug("ledm: destinations listed", "flavor", f.String(), "count", len(out))
-	return out, nil
-}
-
 // DeleteDestination removes a destination; 404 is treated as success.
 func (c *Client) DeleteDestination(ctx context.Context, uri string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)

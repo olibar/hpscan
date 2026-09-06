@@ -487,10 +487,12 @@ func (d *Daemon) finishDocument() {
 	var buf bytes.Buffer
 	if err := pdf.Write(&buf, doc.pages); err != nil {
 		slog.Error("daemon: build pdf failed", "path", path, "error", err)
+		_ = os.Remove(path) // drop the reserved placeholder
 		return
 	}
 	if err := writeAtomic(path, buf.Bytes()); err != nil {
 		slog.Error("daemon: write pdf failed", "path", path, "error", err)
+		_ = os.Remove(path)
 		return
 	}
 	slog.Info("daemon: saved", "path", path, "pages", len(doc.pages))
@@ -498,7 +500,8 @@ func (d *Daemon) finishDocument() {
 
 // writeAtomic writes to a hidden temporary file in the same folder and
 // renames it into place, so sync tools (Cloud Sync, Dropbox) see one
-// complete file instead of a growing one.
+// complete file instead of a growing one. The final name was reserved with
+// O_EXCL by outputPath, so concurrent printer sessions cannot clobber it.
 func writeAtomic(path string, data []byte) error {
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".part")
 	slog.Debug("daemon: writing", "tmp", tmp, "bytes", len(data))
@@ -515,13 +518,16 @@ func writeAtomic(path string, data []byte) error {
 func (d *Daemon) writeJPEG(img []byte, page int) error {
 	path := d.outputPath("jpg", page)
 	if err := writeAtomic(path, img); err != nil {
+		_ = os.Remove(path) // drop the reserved placeholder
 		return fmt.Errorf("write jpeg: %w", err)
 	}
 	slog.Info("daemon: saved", "path", path, "bytes", len(img))
 	return nil
 }
 
-// outputPath renders the filename pattern and avoids collisions.
+// outputPath renders the filename pattern and reserves a free name by
+// creating it exclusively, so two printer sessions saving in the same second
+// get different files. The empty placeholder is replaced by writeAtomic.
 func (d *Daemon) outputPath(ext string, page int) string {
 	now := time.Now()
 	name := d.cfg.Filename
@@ -531,7 +537,13 @@ func (d *Daemon) outputPath(ext string, page int) string {
 	dir := d.cfg.ExpandedOutputDir()
 	path := filepath.Join(dir, name+"."+ext)
 	for i := 1; ; i++ {
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			f.Close()
+			return path
+		}
+		if !errors.Is(err, os.ErrExist) {
+			slog.Warn("daemon: cannot reserve output name, using it anyway", "path", path, "error", err)
 			return path
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s-%d.%s", name, i, ext))

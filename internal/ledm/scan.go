@@ -158,6 +158,10 @@ func (c *Client) ScanPages(ctx context.Context, s ScanSettings) ([][]byte, error
 		case <-time.After(700 * time.Millisecond):
 		}
 	}
+	if len(pages) > 0 {
+		slog.Warn("ledm: scan job never reported completion, keeping the pages received", "job", jobURL, "pages", len(pages))
+		return pages, nil
+	}
 	return nil, fmt.Errorf("scan job %s did not finish within 5 minutes", jobURL)
 }
 

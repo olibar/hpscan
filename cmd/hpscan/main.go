@@ -135,11 +135,21 @@ func dispatch(args []string, cfgPath string, verbose bool, runAs string) error {
 	case "run":
 		return runCmd(cfg, cfgPath)
 	case "scan":
-		return scanCmd(cfg, rest)
+		return scanCmd(firstPrinter(cfg), rest)
 	case "probe":
-		return probeCmd(cfg, rest)
+		return probeCmd(firstPrinter(cfg), rest)
 	}
 	return fmt.Errorf("unknown command %q", cmd)
+}
+
+// firstPrinter narrows a multi-printer config to its first entry for the
+// single-printer commands (scan, probe).
+func firstPrinter(cfg config.Config) config.Config {
+	if first, _, found := strings.Cut(cfg.Printer, ","); found {
+		cfg.Printer = strings.TrimSpace(first)
+		slog.Debug("hpscan: several printers configured, using the first", "printer", cfg.Printer)
+	}
+	return cfg
 }
 
 func unwrapAll(err error) error {
