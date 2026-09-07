@@ -19,11 +19,16 @@ import (
 
 	"github.com/olibar/hpscan/internal/config"
 	"github.com/olibar/hpscan/internal/discover"
+	"github.com/olibar/hpscan/internal/escl"
 	"github.com/olibar/hpscan/internal/ledm"
 	"github.com/olibar/hpscan/internal/pdf"
 )
 
 // Daemon holds the connection state for one printer.
+//
+// A printer speaks either LEDM (2010-2020 models) or eSCL (2020 onwards);
+// the client for the one in use is set and the other is nil. The output half
+// of the daemon - documents, PDF assembly, file naming - is shared.
 type Daemon struct {
 	cfg      config.Config
 	client   *ledm.Client
@@ -33,6 +38,14 @@ type Daemon struct {
 	doc      *document // in-progress multi-page PDF, nil when idle
 	jpegPage int       // page counter for jpeg output within one walkup job
 	seen     map[string]string
+
+	// eSCL backend, used when the printer has no LEDM interface. esub is
+	// guarded because the event poller reads it while the handler may be
+	// replacing it after the printer forgets a subscription.
+	escl   *escl.Client
+	esubMu sync.Mutex
+	esub   *escl.Subscription
+	ecaps  escl.Caps
 }
 
 // document accumulates pages until the printer says the job is complete.
@@ -43,9 +56,9 @@ type document struct {
 	lastPage time.Time
 }
 
-// Connect resolves the printer (config or mDNS) and returns a ready client.
-// cfg.Printer may be "host" or "host:port"; empty means mDNS discovery.
-func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
+// resolveTarget turns cfg.Printer ("host", "host:port", or empty for mDNS)
+// into a host and a LEDM port.
+func resolveTarget(ctx context.Context, cfg config.Config) (string, int, error) {
 	host, port := cfg.Printer, cfg.Port
 	if h, p, err := net.SplitHostPort(host); err == nil {
 		if n, err := strconv.Atoi(p); err == nil {
@@ -58,7 +71,7 @@ func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 		defer cancel()
 		s, err := discover.FirstHP(dctx)
 		if err != nil {
-			return nil, fmt.Errorf("discover printer: %w", err)
+			return "", 0, fmt.Errorf("discover printer: %w", err)
 		}
 		host = s.Address()
 		if s.Port > 0 {
@@ -69,7 +82,51 @@ func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 	if port == 0 {
 		port = 8080
 	}
+	return host, port, nil
+}
+
+// Connect resolves the printer (config or mDNS) and returns a ready LEDM
+// client. cfg.Printer may be "host" or "host:port"; empty means mDNS.
+func Connect(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
+	host, port, err := resolveTarget(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return ledm.New(host, port), nil
+}
+
+// Resolve reports the address a session would use: the configured printer, or
+// the first one found via mDNS when none is configured. Callers that need to
+// build their own clients (the probe command builds one per interface) must
+// use this rather than cfg.Printer, which is empty in the discovery case.
+func Resolve(ctx context.Context, cfg config.Config) (host string, port int, err error) {
+	return resolveTarget(ctx, cfg)
+}
+
+// ConnectAny resolves the printer and returns a client for whichever scan
+// interface it actually offers: LEDM on 2010-2020 models, eSCL on newer ones.
+// Exactly one of the returned clients is non-nil.
+func ConnectAny(ctx context.Context, cfg config.Config) (*ledm.Client, *escl.Client, error) {
+	host, port, err := resolveTarget(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	lc := ledm.New(host, port)
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, lerr := lc.Discover(pctx)
+	cancel()
+	if lerr == nil {
+		return lc, nil, nil
+	}
+	slog.Debug("daemon: no LEDM interface, trying eSCL", "printer", host, "error", lerr)
+	ec := escl.New(host, 0)
+	pctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+	ok := ec.Probe(pctx)
+	cancel()
+	if ok {
+		return nil, ec, nil
+	}
+	return nil, nil, fmt.Errorf("%s answers on neither the LEDM nor the eSCL scan interface: %w", host, lerr)
 }
 
 // Run blocks until ctx is cancelled. It serves every printer listed in the
@@ -140,10 +197,11 @@ func resolveTargets(ctx context.Context, cfg config.Config) ([]string, error) {
 	}
 }
 
-// rediscover finds the configured printer (by Bonjour hostname or IP) in the
-// mDNS results and returns a client for its current address. It never
-// substitutes a different printer.
-func rediscover(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
+// rediscoverTarget finds the configured printer (by Bonjour hostname or IP)
+// in the mDNS results and returns its current address. It never substitutes a
+// different printer. The address is returned rather than a client because the
+// printer found may speak either interface.
+func rediscoverTarget(ctx context.Context, cfg config.Config) (string, int, error) {
 	want := strings.ToLower(strings.TrimSuffix(cfg.Printer, "."))
 	if h, _, err := net.SplitHostPort(want); err == nil {
 		want = h
@@ -152,7 +210,7 @@ func rediscover(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 	defer cancel()
 	found, err := discover.AllHP(dctx)
 	if err != nil {
-		return nil, fmt.Errorf("rediscover %s: %w", cfg.Printer, err)
+		return "", 0, fmt.Errorf("rediscover %s: %w", cfg.Printer, err)
 	}
 	for _, s := range found {
 		host := strings.ToLower(strings.TrimSuffix(s.Host, "."))
@@ -162,10 +220,10 @@ func rediscover(ctx context.Context, cfg config.Config) (*ledm.Client, error) {
 			if port == 0 {
 				port = 8080
 			}
-			return ledm.New(s.Address(), port), nil
+			return s.Address(), port, nil
 		}
 	}
-	return nil, fmt.Errorf("printer %s not found via mDNS (%d HP scanners seen)", cfg.Printer, len(found))
+	return "", 0, fmt.Errorf("printer %s not found via mDNS (%d HP scanners seen)", cfg.Printer, len(found))
 }
 
 // runLoop keeps one printer session alive, reconnecting after errors.
@@ -192,28 +250,58 @@ func runLoop(ctx context.Context, cfg config.Config) {
 	}
 }
 
+// errNoScanInterface means an address answered on neither LEDM nor eSCL. It
+// is the only failure worth retrying at a different address.
+var errNoScanInterface = errors.New("no scan interface")
+
 func runOnce(ctx context.Context, cfg config.Config) error {
-	client, err := Connect(ctx, cfg)
+	host, port, err := resolveTarget(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	d := &Daemon{cfg: cfg, client: client, seen: map[string]string{}}
-	if err := d.setup(ctx); err != nil {
-		if cfg.Printer == "" {
-			return err
-		}
-		// The pinned address may be stale (DHCP gave the printer a new IP):
-		// look for the same printer via mDNS for this session.
-		slog.Warn("daemon: configured printer unreachable, looking it up via mDNS", "printer", cfg.Printer, "error", err)
-		if d.client, err = rediscover(ctx, cfg); err != nil {
-			return err
-		}
-		if err := d.setup(ctx); err != nil {
-			return err
-		}
+	err = serveOne(ctx, cfg, host, port)
+	if !errors.Is(err, errNoScanInterface) || cfg.Printer == "" {
+		return err
 	}
-	defer d.teardown()
-	return d.loop(ctx)
+	// The pinned address may be stale (DHCP gave the printer a new IP): look
+	// for the same printer via mDNS and redo the whole selection there. The
+	// printer found may well be an eSCL-only one, so this cannot shortcut
+	// straight back to LEDM.
+	slog.Warn("daemon: configured printer unreachable, looking it up via mDNS", "printer", cfg.Printer, "error", err)
+	rhost, rport, rerr := rediscoverTarget(ctx, cfg)
+	if rerr != nil {
+		return rerr
+	}
+	return serveOne(ctx, cfg, rhost, rport)
+}
+
+// serveOne runs one full session against a single address, using whichever
+// scan interface that address offers.
+func serveOne(ctx context.Context, cfg config.Config, host string, port int) error {
+	d := &Daemon{cfg: cfg, client: ledm.New(host, port), seen: map[string]string{}}
+	ledmErr := d.setup(ctx)
+	if ledmErr == nil {
+		defer d.teardown()
+		return d.loop(ctx)
+	}
+	slog.Debug("daemon: no LEDM interface here", "printer", host, "error", ledmErr)
+
+	// Newer printers dropped /DevMgmt and /Scan entirely and offer only eSCL,
+	// on the default HTTP port rather than 8080.
+	ec := escl.New(host, 0)
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	isESCL := ec.Probe(pctx)
+	cancel()
+	if !isESCL {
+		return fmt.Errorf("%w: %s answers on neither LEDM (%v) nor eSCL", errNoScanInterface, host, ledmErr)
+	}
+	slog.Info("daemon: printer has no LEDM interface, using eSCL", "printer", host)
+	d.escl = ec
+	if err := d.esclSetup(ctx); err != nil {
+		return err
+	}
+	defer d.esclTeardown()
+	return d.esclLoop(ctx)
 }
 
 func (d *Daemon) setup(ctx context.Context) error {

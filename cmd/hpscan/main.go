@@ -33,6 +33,7 @@ import (
 	"github.com/olibar/hpscan/internal/config"
 	"github.com/olibar/hpscan/internal/daemon"
 	"github.com/olibar/hpscan/internal/discover"
+	"github.com/olibar/hpscan/internal/escl"
 	"github.com/olibar/hpscan/internal/ledm"
 	"github.com/olibar/hpscan/internal/pdf"
 	"github.com/olibar/hpscan/internal/service"
@@ -333,24 +334,19 @@ func discoverCmd() error {
 func scanCmd(cfg config.Config, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
-	client, err := daemon.Connect(ctx, cfg)
+	lc, ec, err := daemon.ConnectAny(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	settings := ledm.ScanSettings{Resolution: cfg.Resolution, Color: cfg.ColorMode == "color", Format: "Jpeg",
-		Width: ledm.A4Width, Height: ledm.A4Height}
-	if cfg.Paper == "letter" {
-		settings.Width, settings.Height = ledm.LetterWidth, ledm.LetterHeight
+	var (
+		img        []byte
+		resolution = cfg.Resolution
+	)
+	if lc != nil {
+		img, resolution, err = scanOnceLEDM(ctx, cfg, lc)
+	} else {
+		img, resolution, err = scanOnceESCL(ctx, cfg, ec)
 	}
-	if caps, err := client.Caps(ctx); err == nil {
-		if caps.Platen.MaxWidth > 0 && settings.Width > caps.Platen.MaxWidth {
-			settings.Width = caps.Platen.MaxWidth
-		}
-		if caps.Platen.MaxHeight > 0 && settings.Height > caps.Platen.MaxHeight {
-			settings.Height = caps.Platen.MaxHeight
-		}
-	}
-	img, err := client.ScanPage(ctx, settings)
 	if err != nil {
 		return err
 	}
@@ -367,7 +363,7 @@ func scanCmd(cfg config.Config, args []string) error {
 			return fmt.Errorf("create %s: %w", out, err)
 		}
 		defer f.Close()
-		if err := pdf.Write(f, []pdf.Page{{JPEG: img, DPI: settings.Resolution}}); err != nil {
+		if err := pdf.Write(f, []pdf.Page{{JPEG: img, DPI: resolution}}); err != nil {
 			return err
 		}
 	} else if err := os.WriteFile(out, img, 0o644); err != nil {
@@ -375,6 +371,49 @@ func scanCmd(cfg config.Config, args []string) error {
 	}
 	fmt.Println("saved", out)
 	return nil
+}
+
+// scanOnceLEDM scans one flatbed page from a 2010-2020 printer. It returns
+// the JPEG and the resolution actually used, which the scanner may have
+// clamped below the configured one.
+func scanOnceLEDM(ctx context.Context, cfg config.Config, client *ledm.Client) ([]byte, int, error) {
+	s := ledm.ScanSettings{Resolution: cfg.Resolution, Color: cfg.ColorMode == "color", Format: "Jpeg",
+		Width: ledm.A4Width, Height: ledm.A4Height}
+	if cfg.Paper == "letter" {
+		s.Width, s.Height = ledm.LetterWidth, ledm.LetterHeight
+	}
+	if caps, err := client.Caps(ctx); err == nil {
+		if caps.Platen.MaxWidth > 0 && s.Width > caps.Platen.MaxWidth {
+			s.Width = caps.Platen.MaxWidth
+		}
+		if caps.Platen.MaxHeight > 0 && s.Height > caps.Platen.MaxHeight {
+			s.Height = caps.Platen.MaxHeight
+		}
+	}
+	img, err := client.ScanPage(ctx, s)
+	return img, s.Resolution, err
+}
+
+// scanOnceESCL does the same on a printer that offers only eSCL.
+func scanOnceESCL(ctx context.Context, cfg config.Config, client *escl.Client) ([]byte, int, error) {
+	s := escl.ScanSettings{Resolution: cfg.Resolution, Color: cfg.ColorMode == "color",
+		Format: escl.FormatJPEG, Width: escl.A4Width, Height: escl.A4Height}
+	if cfg.Paper == "letter" {
+		s.Width, s.Height = escl.LetterWidth, escl.LetterHeight
+	}
+	if caps, err := client.Capabilities(ctx); err == nil {
+		if caps.Platen.MaxWidth > 0 && s.Width > caps.Platen.MaxWidth {
+			s.Width = caps.Platen.MaxWidth
+		}
+		if caps.Platen.MaxHeight > 0 && s.Height > caps.Platen.MaxHeight {
+			s.Height = caps.Platen.MaxHeight
+		}
+		if max := caps.Platen.MaxResolution(); max > 0 && s.Resolution > max {
+			s.Resolution = max
+		}
+	}
+	img, err := client.ScanPage(ctx, s)
+	return img, s.Resolution, err
 }
 
 func ext(format string) string {
@@ -401,11 +440,17 @@ func probeCmd(cfg config.Config, args []string) error {
 			return fmt.Errorf("bad port in %q: %w", args[0], err)
 		}
 	}
-	client, err := daemon.Connect(ctx, cfg)
+	// Resolve once and build both clients from the result: with no printer
+	// configured the address comes from mDNS, and cfg.Printer stays empty.
+	host, port, err := daemon.Resolve(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	paths := []string{
+	client := ledm.New(host, port)
+	// LEDM lives on 8080 (sometimes 80); eSCL lives on the default HTTP port
+	// and never on 8080. Dumping both against one base URL would report the
+	// whole of one interface as missing, so each is fetched where it lives.
+	ledmPaths := []string{
 		"/DevMgmt/DiscoveryTree.xml",
 		"/DevMgmt/ProductConfigDyn.xml",
 		"/Scan/ScanCaps",
@@ -414,13 +459,24 @@ func probeCmd(cfg config.Config, args []string) error {
 		"/WalkupScanToComp/WalkupScanToCompDestinations",
 		"/WalkupScanToComp/WalkupScanToCompEvent",
 		"/EventMgmt/EventTable",
-		"/eSCL/ScannerCapabilities",
-		"/eSCL/ScannerStatus",
 	}
 	fmt.Printf("printer: %s\n", client.BaseURL)
-	for _, p := range paths {
+	fmt.Println("\n########## LEDM")
+	for _, p := range ledmPaths {
 		body, status, err := client.Fetch(ctx, p)
 		fmt.Printf("\n===== GET %s\n", p)
+		if err != nil {
+			fmt.Println("error:", err)
+			continue
+		}
+		fmt.Printf("HTTP %d\n%s\n", status, strings.TrimSpace(string(body)))
+	}
+
+	ec := escl.New(host, 0)
+	fmt.Printf("\n########## eSCL (%s)\n", ec.BaseURL)
+	for _, p := range []string{"/ScannerCapabilities", "/ScannerStatus", "/eSCLConfig", "/WalkupSubscriptions"} {
+		body, status, err := ec.Fetch(ctx, p)
+		fmt.Printf("\n===== GET %s%s\n", escl.Root, p)
 		if err != nil {
 			fmt.Println("error:", err)
 			continue
