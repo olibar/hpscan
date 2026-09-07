@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -19,8 +20,10 @@ import (
 
 // esclShortcuts are the entries offered on the printer's panel. The names
 // matter: the format is read back out of whichever one the user picks, both
-// here and in HP's own client. Two is deliberate - one per output format -
-// where the panel would allow up to escl.MaxShortcuts.
+// here and in HP's own client. These are free text and are shown verbatim -
+// HP's own client registers exactly "Save as PDF" and "Save as JPEG", read
+// back off the printer from its own subscription. Two is deliberate - one per
+// output format - where the panel would allow up to escl.MaxShortcuts.
 func esclShortcuts() []string {
 	return []string{"Save as PDF", "Save as JPEG"}
 }
@@ -107,8 +110,12 @@ func (d *Daemon) esclLoop(ctx context.Context) error {
 }
 
 // esclPoll reads events and never stops for anything the handler is doing.
+//
+// The cadence matters. HP's own client polls roughly every ten seconds; a
+// tight loop makes this printer answer 503, and a 503 storm used to make the
+// daemon unregister itself. Slow and steady is what the device expects.
 func (d *Daemon) esclPoll(ctx context.Context, events chan<- *escl.WalkupEvent, fatal chan<- error) {
-	const pollInterval = 700 * time.Millisecond
+	const pollInterval = 5 * time.Second
 	failures := 0
 	for ctx.Err() == nil {
 		ev, err := d.escl.NextEvent(ctx, d.subscription())
@@ -155,6 +162,15 @@ func (d *Daemon) esclPoll(ctx context.Context, events chan<- *escl.WalkupEvent, 
 	}
 }
 
+// subscriptionID pulls the UUID out of a subscription URI. That id is what a
+// scan job quotes as its ContextID to say which walkup session it belongs to.
+func subscriptionID(uri string) string {
+	if i := strings.LastIndex(uri, "/"); i >= 0 {
+		return uri[i+1:]
+	}
+	return uri
+}
+
 // subscription reads d.esub under the lock: the poller uses it while the
 // handler may be replacing it after a re-registration.
 func (d *Daemon) subscription() *escl.Subscription {
@@ -171,10 +187,10 @@ func (d *Daemon) onESCLEvent(ctx context.Context, ev *escl.WalkupEvent) error {
 		// polling, which is what proves we are here.
 		return nil
 	case escl.EventScanRequested:
-		if d.doc != nil {
-			d.finishDocument()
-		}
-		d.jpegPage = 0
+		// Every extra page the user adds at the panel arrives as another
+		// ScanRequested, not as ScanNewPageRequested - the printer reuses the
+		// same event and only ScanPagesComplete ends the document. Finishing
+		// here would split a multi-page walkup scan into one file per page.
 		return d.esclScan(ctx, ev)
 	case escl.EventScanNewPageRequested:
 		return d.esclScan(ctx, ev)
@@ -212,6 +228,28 @@ func (d *Daemon) esclScan(ctx context.Context, ev *escl.WalkupEvent) error {
 	// otherwise hand back one self-contained PDF per page.
 	outputPDF := d.formatFor(ev.Shortcut) == "pdf"
 	settings.Format = escl.FormatJPEG
+
+	// Naming the walkup session in the job is what makes the printer treat
+	// this as the scan the user started at the panel. Without it the device
+	// sees an unrelated pull scan, finishes after one page, and never offers
+	// "another page or done?" from the glass. HP's own client sends the same
+	// field, holding the subscription's UUID.
+	if sub := d.subscription(); sub != nil {
+		settings.ContextID = subscriptionID(sub.URI)
+	}
+
+	// The scan's purpose. HP's client always sends Document for scan-to-computer.
+	settings.Intent = escl.IntentDocument
+
+	// Identify ourselves, as HP's client does; the scanner advertises that it
+	// wants this as JobSourceInfoSupport.
+	settings.JobSource = escl.JobSourceInfo{
+		UserName:    os.Getenv("USERNAME"),
+		UserDomain:  os.Getenv("USERDOMAIN"),
+		MachineName: d.cfg.Name,
+		AppFileName: "hpscan.exe",
+		Application: "hpscan",
+	}
 
 	pages, err := d.escl.ScanPages(ctx, settings)
 	if err != nil {

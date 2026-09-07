@@ -217,10 +217,21 @@ func (c *Client) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	return nil
 }
 
-// NextEvent polls the subscription for the next instruction. It returns
-// (nil, nil) when the printer has nothing to say, which is the common case:
-// the poll is also what tells the printer this computer is still reachable, so
-// it must keep being called even while idle.
+// The Event resource does not long-poll, whatever ?timeout is set to:
+// measured on a 9120e it answers 204 in about half a second for small values
+// and eventually 504s for large ones. Asking for a long hold and then
+// abandoning the request wedges the subscription permanently - every later
+// poll returns 503 until it is deleted and recreated - so this is a plain
+// short poll, paced by the caller.
+
+// NextEvent waits for the next instruction from the printer, holding the
+// request open for up to EventPollTimeout. It returns (nil, nil) when nothing
+// happened in that window, which is the common case; call it again at once.
+//
+// The request must never be abandoned mid-flight: cancelling one leaves the
+// subscription's event channel permanently returning 503, and only deleting
+// and recreating the subscription clears it. The context deadline here is
+// therefore comfortably longer than the printer's own timeout.
 func (c *Client) NextEvent(ctx context.Context, sub *Subscription) (*WalkupEvent, error) {
 	if sub == nil || sub.URI == "" {
 		return nil, fmt.Errorf("next event: no subscription")
@@ -244,6 +255,11 @@ func (c *Client) NextEvent(ctx context.Context, sub *Subscription) (*WalkupEvent
 	if len(strings.TrimSpace(string(body))) == 0 {
 		return nil, nil
 	}
+	// The event document is the printer's own account of what the user did,
+	// and it carries more than we read out of it. Log it verbatim so a walkup
+	// session can be studied after the fact rather than guessed at.
+	slog.Debug("escl: walkup event document", "xml", string(body))
+
 	var e walkupEventXML
 	if err := xml.Unmarshal(body, &e); err != nil {
 		return nil, fmt.Errorf("parse walkup event: %w", err)

@@ -31,8 +31,9 @@ func TestScanSettingsXML(t *testing.T) {
 			t.Errorf("ScanSettings.xml() missing %s\ngot: %s", want, got)
 		}
 	}
-	if !strings.Contains(got, `<scan:Duplex>false</scan:Duplex>`) {
-		t.Error("a platen scan must not request duplex")
+	if strings.Contains(got, "scan:Duplex") {
+		t.Error("a flatbed scan must not mention Duplex at all: sending it, even as " +
+			"false, makes the printer treat the job as one-shot")
 	}
 	if err := xml.Unmarshal([]byte(got), new(struct{})); err != nil {
 		t.Errorf("ScanSettings.xml() is not well-formed XML: %v", err)
@@ -41,8 +42,9 @@ func TestScanSettingsXML(t *testing.T) {
 
 func TestScanSettingsDuplexOnlyForFeeder(t *testing.T) {
 	platen := ScanSettings{Resolution: 300, Source: SourcePlaten, Duplex: true}
-	if !strings.Contains(platen.xml(), `<scan:Duplex>false</scan:Duplex>`) {
-		t.Error("Duplex must be ignored for a platen scan: the flatbed has one side")
+	if strings.Contains(platen.xml(), "scan:Duplex") {
+		t.Error("Duplex must be omitted for a platen scan: the flatbed has one side, " +
+			"and HP's own client omits the element there")
 	}
 	feeder := ScanSettings{Resolution: 300, Source: SourceAdf, Duplex: true}
 	if !strings.Contains(feeder.xml(), `<scan:Duplex>true</scan:Duplex>`) {
@@ -196,7 +198,11 @@ func TestScanPagesRelativeJobLocation(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
-	pages, err := c.ScanPages(context.Background(), ScanSettings{Resolution: 300, Width: A4Width, Height: A4Height})
+	// The feeder, so the job runs to 404 and the cleanup DELETE actually fires
+	// - that DELETE is what proves the relative Location was resolved.
+	pages, err := c.ScanPages(context.Background(), ScanSettings{
+		Resolution: 300, Width: A4Width, Height: A4Height, Source: SourceAdf,
+	})
 	if err != nil {
 		t.Fatalf("ScanPages with a relative Location: %v", err)
 	}
@@ -209,48 +215,6 @@ func TestScanPagesRelativeJobLocation(t *testing.T) {
 	}
 }
 
-// TestPlatenStopsAfterOnePage pins the behaviour that makes walkup scanning
-// work at all. The flatbed yields one page per job, and an outstanding
-// NextDocument is a request for the NEXT page: while one is open the printer
-// will not offer the user "another page or done?", because it is waiting to
-// produce a page that only exists if they say yes. The panel then stalls and
-// reports that the file could not be saved, even though the page arrived.
-func TestPlatenStopsAfterOnePage(t *testing.T) {
-	var nextDocCalls int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/eSCL/ScanJobs":
-			w.Header().Set("Location", "/eSCL/ScanJobs/p1")
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == http.MethodGet && r.URL.Path == "/eSCL/ScanJobs/p1/NextDocument":
-			nextDocCalls++
-			_, _ = w.Write([]byte("page"))
-		case r.Method == http.MethodDelete:
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	c := &Client{BaseURL: srv.URL + Root, http: srv.Client()}
-	pages, err := c.ScanPages(context.Background(), ScanSettings{
-		Resolution: 300, Width: A4Width, Height: A4Height, Source: SourcePlaten,
-	})
-	if err != nil {
-		t.Fatalf("ScanPages: %v", err)
-	}
-	if len(pages) != 1 {
-		t.Fatalf("got %d pages from the flatbed, want 1", len(pages))
-	}
-	// The stub would happily return pages forever. One call proves we stop.
-	if nextDocCalls != 1 {
-		t.Errorf("NextDocument called %d times for a flatbed scan, want exactly 1: "+
-			"a second call blocks the printer's add-page prompt", nextDocCalls)
-	}
-}
-
-// The feeder is the opposite case: one job really does deliver every sheet, so
-// there the client must keep reading until the printer says 404.
 func TestFeederReadsUntilExhausted(t *testing.T) {
 	left := 3
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -347,4 +311,41 @@ func TestAgainstRealPrinter(t *testing.T) {
 		t.Fatalf("page does not start with the JPEG marker: % x", page[:4])
 	}
 	t.Logf("scanned %d bytes of JPEG", len(page))
+}
+
+// The ContextID is what makes a walkup scan work: it names the subscription the
+// job belongs to, so the printer treats the scan as the session the user
+// started at the panel. Without it the device sees an unrelated pull scan,
+// finishes after one page, and never offers "another page or done?" from the
+// glass. This was read off HP's own client, which sends the subscription's
+// UUID in exactly this position.
+func TestScanSettingsCarriesWalkupContext(t *testing.T) {
+	const id = "0731e685-011a-49fd-a0a1-952b59049add"
+	s := ScanSettings{
+		Resolution: 300, Width: A4Width, Height: A4Height, Color: true,
+		ContextID: id, Intent: IntentDocument,
+	}
+	got := s.xml()
+
+	if !strings.Contains(got, `<scan:ContextID>`+id+`</scan:ContextID>`) {
+		t.Errorf("ScanSettings.xml() is missing the walkup ContextID\ngot: %s", got)
+	}
+	if !strings.Contains(got, `<scan:Intent>Document</scan:Intent>`) {
+		t.Errorf("ScanSettings.xml() is missing the Intent\ngot: %s", got)
+	}
+	// HP puts ContextID between Version and Intent; keep that order.
+	if i, j := strings.Index(got, "scan:ContextID"), strings.Index(got, "scan:Intent"); i < 0 || j < 0 || i > j {
+		t.Errorf("ContextID must precede Intent, as HP's client sends it\ngot: %s", got)
+	}
+	if err := xml.Unmarshal([]byte(got), new(struct{})); err != nil {
+		t.Errorf("ScanSettings.xml() is not well-formed XML: %v", err)
+	}
+}
+
+// An ordinary scan is not part of any panel session, so it must not claim one.
+func TestScanSettingsOmitsContextWhenNotWalkup(t *testing.T) {
+	s := ScanSettings{Resolution: 300, Width: A4Width, Height: A4Height, Color: true}
+	if got := s.xml(); strings.Contains(got, "ContextID") {
+		t.Errorf("a non-walkup scan must not send a ContextID\ngot: %s", got)
+	}
 }

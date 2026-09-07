@@ -12,12 +12,14 @@ package escl
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -40,7 +42,28 @@ type Client struct {
 // New creates a client for host:port. Port 0 means the default HTTP port,
 // which is where every eSCL implementation seen so far serves the interface
 // (the LEDM port 8080 does not carry it).
+//
+// Set HPSCAN_ESCL_TLS=1 to talk to the interface over HTTPS on 443 instead,
+// which is what HP's own client does. The printer serves the same resources
+// on both, with a self-signed certificate that is not verified - there is
+// nothing secret here, and the printer is the only party that could be
+// impersonated on the local network.
 func New(host string, port int) *Client {
+	if os.Getenv("HPSCAN_ESCL_TLS") != "" {
+		hostport := host
+		if port > 0 && port != 80 && port != 443 {
+			hostport = net.JoinHostPort(host, fmt.Sprint(port))
+		}
+		base := "https://" + hostport + Root
+		slog.Debug("escl: new client", "base_url", base, "tls", true)
+		return &Client{
+			BaseURL: base,
+			http: &http.Client{
+				Timeout:   5 * time.Minute,
+				Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			},
+		}
+	}
 	hostport := host
 	if port > 0 && port != 80 {
 		hostport = net.JoinHostPort(host, fmt.Sprint(port))
@@ -282,6 +305,13 @@ const (
 const (
 	FormatJPEG = "image/jpeg"
 	FormatPDF  = "application/pdf"
+
+	// Intents are the scan's purpose, as advertised in ScannerCapabilities.
+	// HP's own client always sends Document for scan-to-computer.
+	IntentDocument       = "Document"
+	IntentPhoto          = "Photo"
+	IntentTextAndGraphic = "TextAndGraphic"
+	IntentPreview        = "Preview"
 )
 
 // Paper sizes in 1/300 inch units, matching the ledm package.
@@ -301,6 +331,51 @@ type ScanSettings struct {
 	Format     string // FormatJPEG (default) or FormatPDF
 	Source     string // SourcePlaten (default) or SourceAdf
 	Duplex     bool   // feeder only, and only when the scanner advertises it
+
+	// Intent is the scan's purpose - one of the values the scanner lists in
+	// its capabilities, typically Document, TextAndGraphic, Photo or Preview.
+	// Omitted when empty, which is what the scanner's own default applies.
+	Intent string
+
+	// JobSource says who is asking. The scanner advertises whether it wants
+	// this as JobSourceInfoSupport, and HP's own driver always sends it.
+	// Omitted entirely when MachineName is empty.
+	JobSource JobSourceInfo
+
+	// ContextID ties this job to a walkup subscription, and is what makes the
+	// printer treat the scan as part of the session the user started at the
+	// panel rather than an unrelated pull scan. Without it the panel never
+	// offers "another page or done?" after a flatbed page: the device has no
+	// way to know the job is the scan it just asked for. It is the
+	// subscription's UUID, and is omitted for ordinary scans.
+	ContextID string
+}
+
+// JobSourceInfo identifies the client behind a scan job. HP sends these
+// children without a namespace prefix, so they are in no namespace at all;
+// this reproduces that rather than tidying it up, because the printer is the
+// authority on what it accepts.
+type JobSourceInfo struct {
+	UserName    string
+	UserDomain  string
+	MachineName string
+	AppFileName string
+	Application string
+}
+
+func (j JobSourceInfo) xml() string {
+	if j.MachineName == "" {
+		return ""
+	}
+	return fmt.Sprintf(`<scan:JobSourceInfo>`+
+		`<UserName>%s</UserName>`+
+		`<UserDomain>%s</UserDomain>`+
+		`<MachineName>%s</MachineName>`+
+		`<AppFileName>%s</AppFileName>`+
+		`<Application>%s</Application>`+
+		`</scan:JobSourceInfo>`,
+		xmlEscape(j.UserName), xmlEscape(j.UserDomain), xmlEscape(j.MachineName),
+		xmlEscape(j.AppFileName), xmlEscape(j.Application))
 }
 
 func (s ScanSettings) source() string {
@@ -352,19 +427,79 @@ func (s ScanSettings) xml() string {
 				`</scan:ScanRegion>`+
 				`</scan:ScanRegions>`, s.Height, s.Width)
 	}
+	// Duplex is a feeder concept and is sent only for a feeder scan. Sending
+	// it on a flatbed job - even as false - makes the printer treat the job as
+	// a one-shot single-sided scan: it closes the job after the first page and
+	// never offers the user the "another page or done?" choice, so a walkup
+	// scan stalls and reports that the file could not be saved. HP's own
+	// client omits it too.
+	duplex := ""
+	if s.source() == SourceAdf {
+		duplex = fmt.Sprintf(`<scan:Duplex>%t</scan:Duplex>`, s.Duplex)
+	}
+	// ContextID sits between Version and Intent, which is where HP's own
+	// client puts it.
+	context := ""
+	if s.ContextID != "" {
+		context = fmt.Sprintf(`<scan:ContextID>%s</scan:ContextID>`, xmlEscape(s.ContextID))
+	}
+	// Intent follows Version in the schema's sequence, and is left out
+	// entirely when unset rather than sent empty.
+	intent := ""
+	if s.Intent != "" {
+		intent = fmt.Sprintf(`<scan:Intent>%s</scan:Intent>`, xmlEscape(s.Intent))
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>`+
 		`<scan:ScanSettings xmlns:pwg=%q xmlns:scan=%q xmlns:escl=%q>`+
 		`<pwg:Version>2.9</pwg:Version>`+
+		`%s`+
+		`%s`+
 		`%s`+
 		`<scan:DocumentFormatExt>%s</scan:DocumentFormatExt>`+
 		`<pwg:InputSource>%s</pwg:InputSource>`+
 		`<scan:XResolution>%d</scan:XResolution>`+
 		`<scan:YResolution>%d</scan:YResolution>`+
 		`<scan:ColorMode>%s</scan:ColorMode>`+
-		`<scan:Duplex>%t</scan:Duplex>`+
+		`%s`+
+		`%s`+
 		`</scan:ScanSettings>`,
-		nsPWG, nsScan, nsScan, region, s.format(), s.source(),
-		s.Resolution, s.Resolution, s.colorMode(), s.Duplex && s.source() == SourceAdf)
+		nsPWG, nsScan, nsScan, context, intent, region, s.format(), s.source(),
+		s.Resolution, s.Resolution, s.colorMode(), duplex, s.JobSource.xml())
+}
+
+// StartJob creates a scan job and returns its URL without collecting any
+// page. Exposed for diagnostics: it allows a caller to observe what the
+// printer does while a scanned page is still sitting on it, unfetched.
+func (c *Client) StartJob(ctx context.Context, s ScanSettings) (string, error) {
+	return c.createJob(ctx, s)
+}
+
+// CollectPages collects the pages of a job already created with StartJob.
+func (c *Client) CollectPages(ctx context.Context, jobURL string, s ScanSettings) ([][]byte, error) {
+	var pages [][]byte
+	for {
+		page, more, err := c.nextDocument(ctx, jobURL)
+		if err != nil {
+			if len(pages) > 0 {
+				return pages, nil
+			}
+			return nil, err
+		}
+		if !more {
+			break
+		}
+		pages = append(pages, page)
+		slog.Info("escl: page received", "page", len(pages), "bytes", len(page))
+		if s.source() == SourcePlaten {
+			// One page per job from the glass; the panel asks the user about
+			// the next one and the printer sends another ScanRequested.
+			break
+		}
+	}
+	if len(pages) == 0 {
+		return nil, fmt.Errorf("job %s produced no page", jobURL)
+	}
+	return pages, nil
 }
 
 // ScanPage runs one flatbed scan and returns the image bytes.
@@ -390,8 +525,18 @@ func (c *Client) ScanPages(ctx context.Context, s ScanSettings) ([][]byte, error
 	if err != nil {
 		return nil, err
 	}
-	// A job left open holds the scanner busy, so always close it out.
-	defer c.deleteJob(jobURL)
+	// Only tear the job down if it ended on its own. DELETE is how a client
+	// cancels, and the printer records it as JobCanceledByUser - so deleting a
+	// flatbed job we deliberately left open would tell the printer the user
+	// abandoned the scan, while it is still waiting to ask them about another
+	// page. A job that has already returned 404 is finished and the DELETE is
+	// a harmless tidy-up.
+	exhausted := false
+	defer func() {
+		if exhausted {
+			c.deleteJob(jobURL)
+		}
+	}()
 
 	var pages [][]byte
 	for {
@@ -405,22 +550,19 @@ func (c *Client) ScanPages(ctx context.Context, s ScanSettings) ([][]byte, error
 			return nil, err
 		}
 		if !more {
+			exhausted = true
 			break
 		}
 		pages = append(pages, page)
 		slog.Info("escl: page received", "page", len(pages), "bytes", len(page))
 
-		// The flatbed produces exactly one page per job, so stop rather than
-		// ask for another. This matters during a walkup scan: an outstanding
-		// NextDocument is a request for the next page, and while one is open
-		// the printer will not offer the user the "another page or done?"
-		// choice - it is waiting to produce a page that only exists if they
-		// say yes. The panel then sits silent and eventually reports that the
-		// file could not be saved, despite the page having arrived intact.
-		// The feeder is different: it really does deliver every sheet from one
-		// job, so there we keep reading until 404.
+		// The flatbed yields one page per job, and we stop here: the job is
+		// left in Processing while the panel asks the user about another page.
+		// If they add one, the printer sends a fresh ScanRequested and we run
+		// a new job. The feeder is the opposite - one job delivers every sheet
+		// - so there we read until the printer says 404.
 		if s.source() == SourcePlaten {
-			slog.Debug("escl: flatbed page collected, leaving the job for the panel to close")
+			slog.Debug("escl: flatbed page collected, leaving the job open for the panel")
 			break
 		}
 	}
@@ -435,9 +577,28 @@ func (c *Client) createJob(ctx context.Context, s ScanSettings) (string, error) 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	body := []byte(s.xml())
-	status, hdr, resp, err := c.do(ctx, http.MethodPost, "/ScanJobs", body)
-	if err != nil {
-		return "", fmt.Errorf("create scan job: %w", err)
+	// The scanner answers 503 while it is still finishing with the previous
+	// page, which happens routinely between the pages of a walkup scan. HP's
+	// own client simply posts again, so do the same rather than failing the
+	// page.
+	var status int
+	var hdr http.Header
+	var resp []byte
+	var err error
+	for attempt := 0; ; attempt++ {
+		status, hdr, resp, err = c.do(ctx, http.MethodPost, "/ScanJobs", body)
+		if err != nil {
+			return "", fmt.Errorf("create scan job: %w", err)
+		}
+		if status != http.StatusServiceUnavailable || attempt >= 5 {
+			break
+		}
+		slog.Debug("escl: scanner busy, retrying the job", "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("create scan job: %w", ctx.Err())
+		case <-time.After(700 * time.Millisecond):
+		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
 		return "", &StatusError{Method: "POST", Path: "/ScanJobs", Status: status, Body: resp}
