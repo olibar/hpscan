@@ -6,14 +6,18 @@ registers your Mac, Windows PC, Linux box or Synology NAS as a destination on
 the printer, waits for you to press Scan on the printer's screen, pulls the
 pages over the network and saves them as PDF or JPEG in the folder you choose.
 
-It speaks the printer's built-in LEDM REST interface (port 8080), the same one
-HP's own utilities use. Nothing is installed on the printer.
+It speaks the printer's own built-in REST interface, the same one HP's
+utilities use: LEDM on port 8080 for 2010-2020 models, eSCL on port 80 for
+newer ones. Whichever a printer offers is detected at connect time, with
+nothing to configure. Nothing is installed on the printer.
 
 ## Features
 
 * Single static binary, no runtime. Runs as a startup service: launchd on
   macOS, systemd on Linux and Synology DSM, Windows service via the Service
   Control Manager.
+* Both printer generations: the older LEDM interface and the eSCL one that
+  replaced it, including models where HP's own software is Windows-only.
 * Several printers from one instance: list them, or let mDNS find them all.
   `hpscan printer add` / `remove` manage the list interactively.
 * Multi-page PDF: "scan another page" on the flatbed, or the whole stack when
@@ -189,19 +193,43 @@ changes: the client only makes outgoing connections to the printer.
 |---|---|---|
 | HP Photosmart 6510 e-All-in-One (B211a) | LEDM WalkupScanToComp | Works: PDF/JPEG, multi-page, Mac + Synology + Windows |
 | HP OfficeJet Pro 9010 series | LEDM WalkupScanToComp | Works: flatbed + document feeder, Mac + Synology + Windows |
+| HP OfficeJet Pro 9120e series | eSCL WalkupSubscriptions | Works: flatbed, PDF/JPEG, Windows |
 
-The protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
-2020 (Photosmart, ENVY, Deskjet, OfficeJet, OfficeJet Pro). If it works for yours,
-please open an issue with the model and the `hpscan probe` output so it can be
-added here. If it does not, the probe output is what is needed to fix it.
+The LEDM protocol is shared by most HP inkjet all-in-ones from roughly 2010 to
+2020 (Photosmart, ENVY, Deskjet, OfficeJet, OfficeJet Pro). Models from roughly
+2020 onwards dropped it and speak eSCL instead; hpscan picks whichever the
+printer offers, with nothing to configure. If it works for yours, please open an
+issue with the model and the `hpscan probe` output so it can be added here. If
+it does not, the probe output is what is needed to fix it.
+
+## Two generations, one tool
+
+Which interface a printer speaks decides nothing you have to care about, but it
+is worth knowing when reading `hpscan probe` output or a log:
+
+| | LEDM | eSCL |
+|---|---|---|
+| Roughly | 2010-2020 | 2020 onwards |
+| Port | 8080 (sometimes 80) | 80 |
+| Register | `POST /WalkupScanToComp/...Destinations` | `POST /eSCL/WalkupSubscriptions` |
+| Wait | long-poll `/EventMgmt/EventTable` | poll `<subscription>/Event` |
+| Panel entry | the destination | the subscription |
+
+On eSCL models the poll is what makes the computer *reachable*, not merely how
+it hears about scans: register without polling and the panel spends ten seconds
+on "Accessing..." before reporting the computer is unavailable. Either way
+hpscan only ever makes outgoing connections, so no firewall rule is needed.
 
 ## Limitations
 
-* No duplex scanning from the feeder yet.
-* LEDM printers only. Models that offer scan-to-computer solely through eSCL
-  (AirScan) or the HP Smart cloud are not supported.
+* No duplex scanning from the feeder yet. (eSCL models report duplex support
+  and the backend carries the setting, but it has not been tested on paper.)
+* HP Smart cloud scanning is not supported and is not planned: it is not a
+  local protocol.
 * In auto-discovery mode (empty `printer`), printers that appear after startup
   need a service restart.
+* eSCL has no authentication at all. Anything on the same network can put a
+  name on the printer's panel, and hpscan cannot change that.
 
 ## Build from source
 
