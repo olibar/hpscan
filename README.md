@@ -37,7 +37,7 @@ Grab the binary for your platform from the
 Macs, `hpscan-linux-amd64` / `hpscan-linux-arm64` for NAS and Linux boxes,
 `hpscan-windows-amd64.exe` for Windows on Intel/AMD, `hpscan-windows-arm64.exe`
 for Windows on ARM such as a Parallels VM on Apple Silicon), or
-build from source with Go 1.26+:
+build from source with Go 1.27+:
 
 ```sh
 go install github.com/olibar/hpscan/cmd/hpscan@latest   # or: make build
@@ -233,7 +233,7 @@ hpscan only ever makes outgoing connections, so no firewall rule is needed.
 
 ## Build from source
 
-Go 1.26+. `make build`, `make test`, `make dist` (cross-compiles all targets).
+Go 1.27+. `make build`, `make test`, `make dist` (cross-compiles all targets).
 Pushing a tag `v*` builds and publishes release binaries via GitHub Actions.
 
 ## License
